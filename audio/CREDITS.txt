@@ -1,0 +1,81 @@
+乒乓球音效素材说明 / SFX credits
+================================
+
+audio/hit1~4.wav、audio/bounce1~4.wav —— 真实乒乓球录音
+----------------------------------------------------------------
+来源: BigSoundBank (bigsoundbank.com) — 作者 Joseph SARDIN
+授权: CC0 1.0 公共领域 (Public Domain)
+      → 可免费用于个人与商业项目，无需署名、可自由修改。
+      官方说明: https://bigsoundbank.com/license.html
+
+原始母版 (48 kHz / 24-bit 单声道)，用户提供于 Desktop/scnuer/pingpong_sfx/：
+  2236  Ping-pong ball, bounce #1  https://bigsoundbank.com/detail-2236-ping-pong-ball-bounce-1.html
+  2237  Ping-pong ball, bounce #2  https://bigsoundbank.com/detail-2237-ping-pong-ball-bounce-2.html
+  2238  Ping-pong ball, bounce #3  https://bigsoundbank.com/detail-2238-ping-pong-ball-bounce-3.html
+  2239  Ping-pong ball, bounce #4  https://bigsoundbank.com/detail-2239-ping-pong-ball-bounce-4.html
+录音场景: 乒乓球落在瓷砖地面上连续弹跳并逐渐静止（每段约 5 秒，34~40 次弹跳）。
+
+★ 为什么不直接用素材包里预切的 pingpong_hit1~4.wav
+  实测它 = 完整录音 [起音点 : +250 ms]，但开头套了 5 ms 淡入。
+  而这一跳的瞬态只有约 1 ms —— 淡入把「啪」削掉了 13.6 dB：
+  bounce1 的第 1 跳峰值 -1.2 dBFS，对应 hit1 只剩 -14.8 dBFS。
+  所以本工程自己重新切，淡入只留 0.3 ms。
+
+本工程成品的生成方式（脚本 %TEMP%/cs1_tools/build_sfx.py）
+  hit1~4.wav     ← 各取一段录音的**第 1 跳**（整段里攻击最锐的一跳）
+                   窗口 [起音-0.5ms, +90ms]，淡入 0.3 ms / 淡出 18 ms
+                   RBJ 二阶低通 4000 Hz (Q=0.707)  ← 磨掉瓷砖反射的高频毛刺
+                   峰值归一到 -2.0 dBFS
+  bounce1~4.wav  ← 各取一段录音的**第 2 跳**（约 362 / 367 / 382 / 452 ms 处）
+                   窗口 [起音-0.5ms, +70ms]，淡入 0.3 ms / 淡出 18 ms
+                   RBJ 二阶低通 9000 Hz (Q=0.707)  ← 只做轻滤，保持清脆
+                   峰值归一到 -2.0 dBFS
+  输出格式: 48 kHz / 16-bit / 单声道 PCM
+
+  设计取舍：
+   - 击球取第 1 跳 + 4 kHz 低通 → 闷、短，像胶皮吃住球；
+     弹跳取第 2 跳 + 9 kHz 轻滤 → 脆、余振长，像台面板被敲响。
+     于是「球拍声 vs 台面声」的对比不靠任何合成音就成立。
+   - 4 个变体峰值统一到 -2.0 dBFS，前 20 ms RMS 落在 -19.4 ~ -20.7 dB（差 1.3 dB）。
+
+  对应的推子（pingpong_audio.gd）：
+     hit_db    -4.0 → -4.5   （新素材峰值高 1.5 dB，再 +1 dB 补瞬态变短）
+     bounce_db -9.0 → -8.5   （同上）
+
+audio/cheer1.wav、audio/cheer2.wav —— 真实观众呐喊（2026-10-03 新增）
+----------------------------------------------------------------
+来源: BigSoundBank (bigsoundbank.com) — 作者 Joseph SARDIN
+授权: 同上，CC0 1.0 公共领域
+原始母版 (44.1 kHz / 16-bit 立体声)：
+  236  Shouts and Applauses of Teens #1
+       https://bigsoundbank.com/detail-236-shouts-and-applauses-of-teens-1.html
+  237  Shouts and Applauses of Teens #2
+       https://bigsoundbank.com/detail-237-shouts-and-applauses-of-teens-2.html
+生成方式（脚本 %TEMP%/cs1_tools/build_cheer.py）
+  窗口 [起音-5ms, +2000ms]，线性插值重采样到 48 kHz，立体声混单声道
+  淡入 0.3 ms / 淡出 80 ms，峰值归一到 -1.5 dBFS
+输出格式: 48 kHz / 16-bit / 单声道 PCM
+
+★ 为什么不用 0019「Applause: 150 People」/ 0021「Applause: 600 People」
+  实测这两条的起音在 303 / 712 ms、能量要 20 秒才堆起来（-26 dB → -15 dB），
+  做得分反馈会明显「迟到」，而且整段里没有一个可以剪出来的瞬时爆发点。
+  0236 的起音只有 11 ms、905 ms 到峰值、之后 1.7 s 内衰减到 -25 dB ——
+  形状正好是「一记呐喊」，这是选它的唯一理由。
+
+★ 为什么要新找一条，而不是继续只用奶龙
+  用户要求「奶龙笑声保存为一种呐喊声」，所以呐喊变成一个**变体池**
+  （cheer1 / cheer2 / nailong_laugh 轮转，见 pingpong_audio.gd 的 CHEER_VARIANTS）。
+  之前只有奶龙一条，单局要响十几次，第三次就听得出是复读；而且奶龙是搞笑的梗，
+  连拍里程碑需要一个正经的现场欢呼。
+
+频段对照（功率谱能量占比，用来确认「是不是人声」）：
+  文件                  <300   0.3-1k   1-3k   3-6k   >6k     重心
+  cheer1.wav            0.1%   68.8%   24.6%   5.5%   1.0%   1310 Hz
+  cheer2.wav            0.3%   36.0%   48.5%  12.9%   2.4%   1808 Hz
+  nailong_laugh.mp3     1.2%   82.4%   14.7%   1.6%   0.0%    919 Hz
+  crowd.wav（旧合成）   1.9%    7.0%   35.3%  36.5%  19.2%   3852 Hz
+  → cheer1/2 与奶龙同落在人声带（0.3~3 kHz）；旧的合成 crowd 是高频噪声，
+    这就是它听起来像「沙沙声」而不是「有人在喊」的原因。
+
+其余音效仍是程序化合成的 16-bit PCM WAV（net / whoosh / cheer / crowd），
+以及用户指定的 audio/nailong_laugh.mp3（玩家得分欢呼声，现为呐喊变体之一）。

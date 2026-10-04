@@ -1,0 +1,390 @@
+[gd_scene load_steps=36 format=3 uid="uid://cq8ppx7k2v3da"]
+
+[ext_resource type="Script" uid="uid://ce3egdeh6n1jo" path="res://player_movement.gd" id="1_player"]
+[ext_resource type="Script" uid="uid://bcrfhfl7gf15" path="res://camera_controller.gd" id="2_camera"]
+[ext_resource type="Script" path="res://paddle_viewmodel.gd" id="3_paddle"]
+[ext_resource type="Script" path="res://pingpong_ball.gd" id="4_ball"]
+[ext_resource type="Script" path="res://pingpong_game.gd" id="5_game"]
+[ext_resource type="Script" path="res://court_builder.gd" id="7_court"]
+[ext_resource type="Script" path="res://pingpong_audio.gd" id="8_audio"]
+[ext_resource type="Script" path="res://opponent_player.gd" id="9_opponent"]
+[ext_resource type="Mesh" path="res://models/table_clean.res" id="10_tablemesh"]
+[ext_resource type="Texture2D" path="res://textures/net_mesh.png" id="11_nettex"]
+
+; ══════════════════════════════════════════════════════════
+;  乒乓球赛场 (ITTF 标准球台 + 室内场馆)
+;    台面 2.74 x 1.525 m，台高 0.76 m
+;    球网在 z = 0，网高 0.1525 m，网宽 1.83 m
+;    玩家半台 z > 0（接球侧），对方半台 z < 0
+;
+;  场馆几何（地板 / 挡板 / 看台 / 观众 / 天花板 / 顶灯）
+;  由 Court 节点上的 court_builder.gd 在运行时生成 ——
+;  几百个观众和 6 排看台手写进 tscn 会长到几千行，
+;  代码生成才能参数化调（排数、间距、颜色都是 export）。
+; ══════════════════════════════════════════════════════════
+
+; ── 台面顶层（均匀蓝）──
+; 为什么不再用「一小块补洞片」：
+;   混元3D 的球台顶面是带脏污/色斑的扫描贴图，补洞片和周围永远差一点色，
+;   实拍里就是一块看得出来的长方形色差。既然要的是「整张台面均匀的蓝」，
+;   干脆整张盖一层 —— 补洞、去色斑、统一颜色一次解决，
+;   也没有了「补片切线基退化 → 法线解 NaN → 黑块」那类坑（纯色材质不存在）。
+;
+; ★ 高度账（这版顺带修掉一个隐藏很久的错位）：
+;   GLB 球台顶面实测在 y = 0.611，而物理台面 table_height = 0.76，差 0.149 m。
+;   也就是说球一直在**离台面 15 cm 的空中**弹跳，落点预测圈同样是悬空的。
+;   修法是抬模型去对齐物理（而不是反过来改物理，那会牵动发球解算/对手拍高）：
+;   TableModel 整体上移 0.145 → 顶面落到 0.756，正好被这层顶盖吃掉；
+;   台面顶面 = 0.760 = 物理 table_height，球心弹跳点 0.78 = 球半径刚好贴面。
+;   抬起来腿会悬空 0.145，所以补了 4 块脚垫（FootLB/LF/RB/RF）垫在原来的位置。
+;   球台自带的网随之上移到 0.745~0.905，整段落进程序化球网里被盖住，
+;   所以画面上的网仍然是 0.760~0.9125 那张尺寸正确、干净的网。
+;
+;   台面蓝按实拍反推：同一套光照下 0.122/0.243/0.478 渲成 (92,136,238)，
+;   而真实台面是 (76,123,223) → 反解出 ~0.105/0.225/0.46。
+[sub_resource type="BoxMesh" id="BoxMesh_tabletop"]
+size = Vector3(1.525, 0.015, 2.74)
+
+[sub_resource type="StandardMaterial3D" id="Mat_tabletop"]
+albedo_color = Color(0.105, 0.225, 0.46, 1)
+roughness = 0.62
+
+[sub_resource type="BoxMesh" id="BoxMesh_endline"]
+size = Vector3(1.525, 0.008, 0.02)
+
+[sub_resource type="BoxMesh" id="BoxMesh_foot"]
+size = Vector3(0.062, 0.15, 0.93)
+
+[sub_resource type="BoxMesh" id="BoxMesh_top"]
+size = Vector3(1.525, 0.05, 2.74)
+
+[sub_resource type="StandardMaterial3D" id="Mat_top"]
+albedo_color = Color(0.10, 0.33, 0.58, 1)
+roughness = 0.55
+
+[sub_resource type="BoxShape3D" id="BoxShape_top"]
+size = Vector3(1.525, 0.05, 2.74)
+
+[sub_resource type="BoxMesh" id="BoxMesh_edge"]
+size = Vector3(1.545, 0.012, 2.76)
+
+[sub_resource type="StandardMaterial3D" id="Mat_edge"]
+albedo_color = Color(0.92, 0.94, 0.96, 1)
+roughness = 0.5
+
+[sub_resource type="BoxMesh" id="BoxMesh_line"]
+size = Vector3(0.02, 0.008, 2.74)
+
+[sub_resource type="BoxMesh" id="BoxMesh_midline"]
+size = Vector3(0.02, 0.008, 2.74)
+
+[sub_resource type="StandardMaterial3D" id="Mat_line"]
+albedo_color = Color(1, 1, 1, 1)
+roughness = 0.6
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_leg"]
+top_radius = 0.025
+bottom_radius = 0.030
+height = 0.735
+radial_segments = 12
+
+[sub_resource type="StandardMaterial3D" id="Mat_leg"]
+albedo_color = Color(0.16, 0.17, 0.20, 1)
+roughness = 0.4
+metallic = 0.5
+
+[sub_resource type="QuadMesh" id="QuadMesh_net"]
+size = Vector2(1.83, 0.126)
+subdivide_width = 8
+subdivide_depth = 2
+
+[sub_resource type="StandardMaterial3D" id="Mat_net"]
+; 网孔：用贴图 alpha 直接混合（transparency = 1，不是 alpha 裁剪）。
+; 近距离看得出一个个网眼；远距离 mipmap 一平均就虚化成一层薄纱 ——
+; 这正是真实球网在几米外的样子。裁剪模式反而会「远一点整张网消失」。
+albedo_texture = ExtResource("11_nettex")
+uv1_scale = Vector3(14.52, 1, 1)
+roughness = 0.85
+transparency = 1
+cull_mode = 2
+
+[sub_resource type="BoxMesh" id="BoxMesh_net_hem"]
+; 底摆：盖住网片与台面的接缝（也是扫描网残渣的兜底遮挡）
+size = Vector3(1.83, 0.01, 0.016)
+
+[sub_resource type="StandardMaterial3D" id="Mat_net_hem"]
+albedo_color = Color(0.62, 0.64, 0.63, 1)
+roughness = 0.75
+
+[sub_resource type="BoxMesh" id="BoxMesh_net_top"]
+; 白顶带：真实球网顶部 15 mm 白布（0.896~0.9125）
+size = Vector3(1.83, 0.0165, 0.016)
+
+[sub_resource type="StandardMaterial3D" id="Mat_net_top"]
+albedo_color = Color(0.95, 0.95, 0.93, 1)
+roughness = 0.55
+
+[sub_resource type="BoxMesh" id="BoxMesh_net_arm"]
+; 托臂：球台半宽 0.7625 → 网半宽 0.915，两端各外伸 0.1525，靠这根臂托住
+size = Vector3(0.1525, 0.014, 0.02)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_post"]
+top_radius = 0.011
+bottom_radius = 0.013
+height = 0.175
+radial_segments = 12
+
+[sub_resource type="StandardMaterial3D" id="Mat_post"]
+albedo_color = Color(0.20, 0.21, 0.24, 1)
+roughness = 0.35
+metallic = 0.6
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_player"]
+size = Vector3(0.6, 1.8, 0.6)
+
+; 室内场馆：背景色只在「看向挡板以上」时才可能露出来，给个偏冷的暗色，
+; 和顶棚灯的白光形成对比，不至于让天花板边缘发灰。
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 1
+background_color = Color(0.055, 0.065, 0.085, 1)
+ambient_light_source = 3
+ambient_light_color = Color(0.74, 0.79, 0.88, 1)
+ambient_light_energy = 0.34
+
+; ══════════════════ 场景树 ══════════════════
+[node name="PingPongTable" type="Node3D"]
+script = ExtResource("5_game")
+ball_path = NodePath("Ball")
+paddle_path = NodePath("Player/Head/Camera3D/PaddleRig")
+player_path = NodePath("Player")
+
+; ── 赛场场馆（代码生成：地板 / 挡板 / 看台 / 观众 / 天花板 / 顶灯）──
+[node name="Court" type="Node3D" parent="."]
+script = ExtResource("7_court")
+
+; ── 音效（击球反馈声 + 现场呐喊声）──
+[node name="Audio" type="Node" parent="."]
+script = ExtResource("8_audio")
+
+; ── 球台 ──
+[node name="Table" type="StaticBody3D" parent="."]
+; ★ collision_layer/mask = 0：关掉球台的物理碰撞。
+;   这块 1.525×0.05×2.74 的薄板（y=0.735）默认在第 1 层，而玩家
+;   CharacterBody3D 也在第 1 层 —— 于是玩家走到台边就被这块看不见的板挡住，
+;   怎么走都上不了台，正是用户反复报的「空气墙」。
+;   乒乓球是自绘物理（pingpong_ball 的 _physics_process 自己做弹跳/撞网判定），
+;   完全不依赖物理引擎的碰撞，所以关掉它不影响任何东西。
+;   关掉之后玩家能站到台前/台上（第一人称看不到自己的身体，视觉上就是「趴在台前」），
+;   拍子天然落在台面上方，空气墙消失。
+collision_layer = 0
+collision_mask = 0
+
+; 混元3D 生成的球台模型，但**已经做过一次网格手术**：原 GLB 里把一把多余的
+; 乒乓球拍和球台烘进了同一份几何（球拍是 15 个独立连通壳，凸出台面 ~3 cm），
+; 现在换成清理过的 models/table_clean.res。源 GLB 与原始贴图备份在 models/_raw/。
+;
+; transform 是原来「TableModel 节点(绕Y 90° + 非均匀缩放) × GLB 内部 node_0
+; (绕X 90°，glTF Y-up → Godot Z-up)」复合出来的结果，等价写法：
+;   rotation_degrees=(0,90,0) scale=(2.703,1.859,2.052) 再乘一个绕X 90°
+; 这里直接写成展开后的矩阵，免得依赖欧拉角分解顺序。
+; 世界 AABB ≈ X1.525 × Z2.74；模型自身顶面在 y≈0.611、自带网顶到 0.760。
+; ★ origin.y = +0.145 是这一版加的：模型整体抬到「顶面 0.756」，
+;   让可见台面与物理台面（table_height = 0.76）对齐，理由见文件头「高度账」。
+;   抬高后自带网顶到 0.905，落在程序化球网（0.760~0.9125）里面被盖住。
+[node name="TableModel" type="MeshInstance3D" parent="Table"]
+transform = Transform3D(0, 2.052, 0, 0, 0, -1.859, -2.703, 0, 0, 0, 0.145, 0)
+mesh = ExtResource("10_tablemesh")
+
+[node name="TableTop" type="MeshInstance3D" parent="Table"]
+; 顶面 0.760 = 物理 table_height；底面 0.745。模型抬到 0.756 的顶面正好夹在中间。
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7525, 0)
+cast_shadow = 0
+mesh = SubResource("BoxMesh_tabletop")
+material_override = SubResource("Mat_tabletop")
+
+; 抬高模型后腿脚离地 0.145，这 4 块垫子正好垫上（位置=实测贴地几何的质心）。
+[node name="FootLB" type="MeshInstance3D" parent="Table"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.453, 0.0745, -0.6565)
+mesh = SubResource("BoxMesh_foot")
+surface_material_override/0 = SubResource("Mat_leg")
+
+[node name="FootLF" type="MeshInstance3D" parent="Table"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.453, 0.0745, 0.6315)
+mesh = SubResource("BoxMesh_foot")
+surface_material_override/0 = SubResource("Mat_leg")
+
+[node name="FootRB" type="MeshInstance3D" parent="Table"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.4615, 0.0745, -0.6565)
+mesh = SubResource("BoxMesh_foot")
+surface_material_override/0 = SubResource("Mat_leg")
+
+[node name="FootRF" type="MeshInstance3D" parent="Table"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.4615, 0.0745, 0.6315)
+mesh = SubResource("BoxMesh_foot")
+surface_material_override/0 = SubResource("Mat_leg")
+
+[node name="Top" type="MeshInstance3D" parent="Table"]
+visible = false
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.735, 0)
+mesh = SubResource("BoxMesh_top")
+surface_material_override/0 = SubResource("Mat_top")
+
+[node name="Collision" type="CollisionShape3D" parent="Table"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.735, 0)
+shape = SubResource("BoxShape_top")
+
+[node name="Edge" type="MeshInstance3D" parent="Table"]
+visible = false
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.748, 0)
+mesh = SubResource("BoxMesh_edge")
+surface_material_override/0 = SubResource("Mat_edge")
+
+; ── 台面白线 ──
+; 一圈「沿台边的白线」+ 一条「中线」。台边那两条原来是烘在模型扫描贴图里的，
+; 被顶盖压掉之后必须自己补回来，否则台子就是一块没有边界的光板。
+; 高度 0.763 = 顶盖顶面 0.760 再往上 3 mm（线高 8 mm，一半埋进台面里，不会浮）。
+; 边线中心从 ±0.7625 内缩到 ±0.7525，让 2 cm 宽的线正好与台边齐平。
+[node name="LineLeft" type="MeshInstance3D" parent="Table"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.7525, 0.763, 0)
+mesh = SubResource("BoxMesh_line")
+surface_material_override/0 = SubResource("Mat_line")
+
+[node name="LineRight" type="MeshInstance3D" parent="Table"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.7525, 0.763, 0)
+mesh = SubResource("BoxMesh_line")
+surface_material_override/0 = SubResource("Mat_line")
+
+[node name="MidLine" type="MeshInstance3D" parent="Table"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.763, 0)
+mesh = SubResource("BoxMesh_midline")
+surface_material_override/0 = SubResource("Mat_line")
+
+[node name="LineFar" type="MeshInstance3D" parent="Table"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.763, -1.36)
+mesh = SubResource("BoxMesh_endline")
+surface_material_override/0 = SubResource("Mat_line")
+
+[node name="LineNear" type="MeshInstance3D" parent="Table"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.763, 1.36)
+mesh = SubResource("BoxMesh_endline")
+surface_material_override/0 = SubResource("Mat_line")
+
+[node name="LegFL" type="MeshInstance3D" parent="Table"]
+visible = false
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.66, 0.3675, 1.24)
+mesh = SubResource("CylinderMesh_leg")
+surface_material_override/0 = SubResource("Mat_leg")
+
+[node name="LegFR" type="MeshInstance3D" parent="Table"]
+visible = false
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.66, 0.3675, 1.24)
+mesh = SubResource("CylinderMesh_leg")
+surface_material_override/0 = SubResource("Mat_leg")
+
+[node name="LegBL" type="MeshInstance3D" parent="Table"]
+visible = false
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.66, 0.3675, -1.24)
+mesh = SubResource("CylinderMesh_leg")
+surface_material_override/0 = SubResource("Mat_leg")
+
+[node name="LegBR" type="MeshInstance3D" parent="Table"]
+visible = false
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.66, 0.3675, -1.24)
+mesh = SubResource("CylinderMesh_leg")
+surface_material_override/0 = SubResource("Mat_leg")
+
+; ── 球网 ──
+; ★ 高度账（世界 y）：台面 0.760 ｜ 底摆 0.760~0.770 ｜ 网片 0.770~0.896 ｜ 白顶带 0.896~0.9125
+;   net_height = 0.1525 → 网顶 0.9125，和主控里的物理判定一致。
+; ★ 宽度账：球台 1.525（x ±0.7625），网 1.83（x ±0.915），两端各外伸 0.1525。
+[node name="Net" type="Node3D" parent="."]
+
+[node name="Body" type="MeshInstance3D" parent="Net"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.833, 0)
+cast_shadow = 0
+mesh = SubResource("QuadMesh_net")
+surface_material_override/0 = SubResource("Mat_net")
+
+[node name="Hem" type="MeshInstance3D" parent="Net"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.765, 0)
+mesh = SubResource("BoxMesh_net_hem")
+surface_material_override/0 = SubResource("Mat_net_hem")
+
+[node name="Top" type="MeshInstance3D" parent="Net"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.90425, 0)
+mesh = SubResource("BoxMesh_net_top")
+surface_material_override/0 = SubResource("Mat_net_top")
+
+[node name="ArmLeft" type="MeshInstance3D" parent="Net"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.83875, 0.769, 0)
+mesh = SubResource("BoxMesh_net_arm")
+surface_material_override/0 = SubResource("Mat_post")
+
+[node name="ArmRight" type="MeshInstance3D" parent="Net"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.83875, 0.769, 0)
+mesh = SubResource("BoxMesh_net_arm")
+surface_material_override/0 = SubResource("Mat_post")
+
+[node name="PostLeft" type="MeshInstance3D" parent="Net"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.915, 0.8475, 0)
+mesh = SubResource("CylinderMesh_post")
+surface_material_override/0 = SubResource("Mat_post")
+
+[node name="PostRight" type="MeshInstance3D" parent="Net"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.915, 0.8475, 0)
+mesh = SubResource("CylinderMesh_post")
+surface_material_override/0 = SubResource("Mat_post")
+
+; ══════════════════ 玩家 ══════════════════
+; 只能在自己的半台活动（z > 0.35），活动范围写在 player_movement.gd 的「活动范围」组里
+[node name="Player" type="CharacterBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 1.95)
+script = ExtResource("1_player")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Player"]
+shape = SubResource("BoxShape3D_player")
+
+[node name="Head" type="Node3D" parent="Player"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.62, 0)
+script = ExtResource("2_camera")
+initial_pitch_degrees = -21.3
+
+[node name="Camera3D" type="Camera3D" parent="Player/Head"]
+fov = 70.0
+near = 0.03
+
+[node name="PaddleRig" type="Node3D" parent="Player/Head/Camera3D"]
+script = ExtResource("3_paddle")
+; 第一人称不再渲染手。fp_hand.gd 生成的那只手（掌+四指+前臂）模型精度
+; 撑不起近距离特写，干脆只留球拍 —— 生成器留着，想恢复把这里改回 true。
+show_hand = false
+
+; ══════════════════ 对手 ══════════════════
+; 球台对面的对手：**一把悬空的球拍** —— 人形已关（见 opponent_player.show_figure）。
+; 站位在球台远边(-1.37)之外，拍面朝玩家；发球与回球时由 pingpong_game 触发挥拍，
+; 拍面中心特意摆在击球点上，球看起来是被拍子打出去的。
+; 没有人形时，球拍的待机浮动 + 缓慢滚转撑住「被一只看不见的手握着」的感觉。
+[node name="Opponent" type="Node3D" parent="."]
+script = ExtResource("9_opponent")
+show_figure = false
+
+; ══════════════════ 乒乓球 ══════════════════
+[node name="Ball" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, -0.5)
+script = ExtResource("4_ball")
+
+; 主光：从左上后方压下来，天花板不投影（见 court_builder），所以能照进场地
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, -0.35, 0.35, 0, 0.707, 0.707, -0.5, -0.612, 0.612, 0, 8, 3)
+light_energy = 0.85
+shadow_enabled = true
+
+; 球台上方的辅助补光（让台面别在顶灯之间发暗）
+[node name="FillLight" type="OmniLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.6, 0)
+light_color = Color(1, 0.98, 0.94, 1)
+light_energy = 0.55
+omni_range = 9.0
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_main")

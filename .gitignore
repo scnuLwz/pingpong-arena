@@ -1,0 +1,13 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# ── 备份到 GitHub 时排除（2026-10-04）──
+# 原始素材：78MB 的源 GLB + 16MB 原始贴图，已被上面 _raw/.gdignore 让 Godot 不导入，
+# 再排除一次是为了不让它进 git 历史。清理后的 models/table_clean.res 与贴图才是运行时用的。
+# 备份走 Release 附件（单个 78MB 文件超了 blob 请求体上限）。
+models/_raw/
+
+# 构建产物与本机状态
+export_presets.cfg.bak
+*.tmp
