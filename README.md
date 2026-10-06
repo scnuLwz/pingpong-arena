@@ -110,6 +110,16 @@ bash tests/run_regression.sh
 跑之前会备份玩家存档、跑完逐字节比对，不一致即判定失败并还原
 （探针若在离树实例上调 `reset_all()`，会拿默认档案覆盖真实存档且不报错）。
 
+导出产物另有一道自检 —— 用引擎加载打好的包跑一遍关键场景，确认资源真的都进包了：
+
+```bash
+bash tests/verify_export.sh                            # 默认验桌面版 exe
+bash tests/verify_export.sh D:/dev/cs1_web/index.pck   # 也可以验网页版
+```
+
+`export_presets.cfg` 的 `exclude_filter` 是**硬排除**、会切断依赖链，而主菜单只用到
+字体和音频 —— 所以「主菜单正常但进不去比赛」这类问题必须靠这道检查兜住。
+
 ## 素材授权
 
 音效（`audio/`）来自 [BigSoundBank](https://bigsoundbank.com)（Joseph SARDIN），
