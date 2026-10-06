@@ -22,8 +22,8 @@ smart-HTTP 传输（表现为 "expected flush after ref listing" 或直接挂起
 
 推送方式：一次构造**整棵树**（不是增量 diff）。GitHub 的 tree 是整体替换语义，
 所以本地删掉的文件自然也会从远端消失 —— 这正是「同步」该有的行为。
-★ 代价：每个文件都要重新 POST blob（224 个文件约 30 s），但换来实现简单、
-  绝不出现「本地删了远端还在」。
+★ 内容没变的文件**不重传**：先拉远端 tree，blob sha（内容哈希）相同的直接复用，
+  只有变化的文件才 POST blob。首次全量上传约 5 分钟，之后只改 1 个文件几秒完成。
 
 环境变量：GH_TOKEN（fine-grained PAT 或 classic PAT，需 repo 写权限）。
 ★ 不要把 token 写进任何文件。
@@ -49,7 +49,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 MAX_RAW = 70 * 1024 * 1024
 
 
-def call(method, url, payload=None, raw=False, allow=(200, 201)):
+def _call_once(method, url, payload=None, raw=False, allow=(200, 201)):
     """调 GitHub API。返回解析后的 JSON；raw=True 时返回原始 bytes。
 
     非 allow 里的状态码抛 GitHubError（带上错误体，方便定位）。
@@ -84,6 +84,34 @@ class GitHubError(Exception):
     def __init__(self, code, msg):
         super().__init__(msg)
         self.code = code
+
+
+# 值得重试的状态码：这台机器的沙箱代理会**间歇性**注入 401（实测：推送
+# 225 个 blob 到第 180 个时挂掉，几秒后同一个 token 查询又完全正常），
+# 5xx / 429 同理。**一次瞬时失败不该让整轮推送白跑。**
+RETRY_CODES = (401, 429, 500, 502, 503, 504)
+
+
+def call(method, url, payload=None, raw=False, allow=(200, 201), retries=4):
+    """带退避重试的 API 调用（见 RETRY_CODES）。
+
+    只对「可能是瞬时」的错误重试；4xx 里确定是配置问题的（404/422/403）
+    直接抛出，不浪费时间。
+    """
+    last = None
+    for attempt in range(retries):
+        if attempt:
+            delay = 2 ** attempt          # 2, 4, 8 s
+            print(f"      ⚠ HTTP {last.code} —— {delay}s 后重试"
+                  f"（第 {attempt + 1}/{retries} 次尝试）")
+            time.sleep(delay)
+        try:
+            return _call_once(method, url, payload, raw, allow)
+        except GitHubError as e:
+            if e.code not in RETRY_CODES:
+                raise
+            last = e
+    raise last
 
 
 def local_entries():
@@ -144,6 +172,27 @@ def head_sha():
         raise
 
 
+def remote_blob_shas():
+    """远端当前树里已有的 blob sha 集合。
+
+    ★ 用来跳过内容没变的文件：git blob 是**按内容寻址**的，本地索引算出来的
+      sha 和远端 tree 里的 sha 是同一套哈希，相等 ⇒ 内容逐字节相同 ⇒
+      直接把这个 sha 写进新树即可，**一个字节都不用传**。
+      实测 225 个文件里只改了 1 个时，原本要传 5 分钟的整棵树变成几秒。
+    ★ truncated 时（超大仓库，7MB/10 万条上限）退回全量上传，宁可慢也别漏。
+    """
+    try:
+        t = call("GET", f"{API}/git/trees/{BRANCH}?recursive=1")
+    except GitHubError as e:
+        if e.code == 404 or e.code == 409:
+            return set()
+        raise
+    if t.get("truncated"):
+        print("      ⚠ 远端 tree 被截断，本轮退回全量上传")
+        return set()
+    return {e["sha"] for e in t.get("tree", []) if e["type"] == "blob"}
+
+
 def main():
     items = local_entries()
     blobs = read_index_blobs([sha for _, _, sha in items])
@@ -175,9 +224,17 @@ def main():
         print("[1/3] 分支已存在 → 跳过 Contents API")
         rest = items
 
-    # ── 上传 blob ──
-    print(f"[2/3] 上传 {len(rest)} 个 blob")
-    for i, (rel, mode, sha) in enumerate(rest, len(entries) + 1):
+    # ── 上传 blob（内容没变的直接复用远端已有的）──
+    have = remote_blob_shas()
+    todo = [(rel, mode, sha) for rel, mode, sha in rest if sha not in have]
+    print(f"[2/3] blob：远端已有 {len(rest) - len(todo)} 个可复用，"
+          f"需上传 {len(todo)} 个")
+    for rel, mode, sha in rest:
+        if sha in have:
+            entries.append({"path": rel, "mode": mode,
+                            "type": "blob", "sha": sha})
+    sent = 0
+    for rel, mode, sha in todo:
         raw = blobs[sha]
         if len(raw) > MAX_RAW:
             raise SystemExit(f"{rel} 超过 {MAX_RAW} 字节，走 Release 附件"
@@ -188,9 +245,11 @@ def main():
         })
         entries.append({"path": rel, "mode": mode,
                         "type": "blob", "sha": blob["sha"]})
-        if i % 20 == 0 or i == len(items):
-            print(f"      {i}/{len(items)}")
+        sent += 1
+        if sent % 20 == 0:
+            print(f"      已上传 {sent}/{len(todo)}")
         time.sleep(0.05)   # 次级速率限制
+    print(f"      上传完成（{sent} 个）")
 
     print("      构造整棵树")
     tree = call("POST", f"{API}/git/trees", {"tree": entries})
