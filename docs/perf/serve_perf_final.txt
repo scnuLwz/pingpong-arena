@@ -1,0 +1,109 @@
+Godot Engine v4.7.2.stable.mono.official.ed1daf0bf - https://godotengine.org
+
+========================================================
+ 性能量化探针（无头 CPU 计时）
+========================================================
+  当前 serve_solve_iters=4  serve_search_dt=0.03333
+
+── A. simulate_path 单次成本 ──
+  基准弹道 from=(0.0, 1.05, 1.5) 初速 6.71 m/s
+  A1 解算器档 (2.5s, dt=1/60, clr=0.003)                0.038 ms/次
+  A2 落点提示档 (1.6s, dt=1/60, clr=0)                   0.048 ms/次
+
+── B. _solve_legal_serve 端到端 ──
+  候选 = own_x 5 × n_z 6 × flight 6 = 180 次（上限 200）
+  plan 含 from_x = true
+  B1 固定瞄准 from z=1.5      0.682 ms/次   命中 25/25
+  B1 固定瞄准 from z=2.2      0.717 ms/次   命中 25/25
+  B1 固定瞄准 from z=3.0      0.688 ms/次   命中 25/25
+  B2 瞄准点每轮变           8.259 ms/次
+  B3 ★最坏（强制跑满 200）  31.753 ms/次
+
+── B4. _solve_serve_cached 缓存 ──
+  首次（未命中）ok=true
+  B4a 缓存命中（同 from/瞄准/自旋）                            0.002 ms/次
+  B4b 未命中（每轮改瞄准点）                                   9.317 ms/次
+  B5 连续小步转视角           9.184 ms/次   快路命中 27/40
+
+── D. ★粗搜索有没有把「解得出合法发球」的能力弄丢 ──
+     （每个配置扫 60 个随机瞄准点：ok 比例 / 落点误差 / 耗时）
+     ★ 只看 ok 比例会**饱和**（每个配置都是 60/60）—— 因为解算器
+       最后还有一条 `best` 兜底，永远能返回一个合法解。
+       真正的质量指标是**第二跳离瞄准点多远**（越小越准）。
+   8/1-30  无预算             ok 60/60  误差 均 0.259 / p50 0.276 / p95 0.378 m    18.62 ms/次
+   8/1-30  预算 20ms         ok 60/60  误差 均 0.404 / p50 0.314 / p95 0.922 m    12.84 ms/次
+   8/1-30  预算 16ms         ok 60/60  误差 均 0.498 / p50 0.458 / p95 0.993 m    10.78 ms/次
+   8/1-30  预算 12ms         ok 60/60  误差 均 0.512 / p50 0.478 / p95 1.002 m     8.46 ms/次
+   8/1-30  预算  8ms         ok 60/60  误差 均 0.737 / p50 0.817 / p95 1.350 m     6.74 ms/次
+   8/1-30  预算  6ms         ok 60/60  误差 均 0.766 / p50 0.833 / p95 1.350 m     5.17 ms/次
+
+── E. 单次 _solve_legal_serve 耗时分布（每档 80 个随机瞄准点）──
+     ★ 看的是 p90/max 而不是均值：玩家转视角时每 0.12 s 触发一次，
+       一次 40 ms 尖峰就是 2~3 帧掉帧，每秒来 8 次 = 肉眼可见的卡顿。
+  ── serve_search_dt = 1-60 无预算 ──
+    from z=1.6  ok 80/80  p50  17.1  p90  69.7  max  92.5 ms   超一帧 43/80
+    from z=2.4  ok 80/80  p50  19.1  p90  52.5  max  78.6 ms   超一帧 45/80
+    from z=3.1  ok 80/80  p50  21.6  p90  59.9  max  76.8 ms   超一帧 45/80
+  ── serve_search_dt = 1-30 无预算 ──
+    from z=1.6  ok 80/80  p50  12.9  p90  43.0  max  60.3 ms   超一帧 33/80
+    from z=2.4  ok 80/80  p50  12.8  p90  32.0  max  41.7 ms   超一帧 29/80
+    from z=3.1  ok 80/80  p50  15.8  p90  34.6  max  41.4 ms   超一帧 39/80
+  ── serve_search_dt = 1-30 预算 12ms ──
+    from z=1.6  ok 80/80  p50  12.1  p90  12.3  max  12.9 ms   超一帧  0/80
+    from z=2.4  ok 80/80  p50  12.1  p90  12.4  max  12.8 ms   超一帧  0/80
+    from z=3.1  ok 80/80  p50  12.1  p90  12.5  max  13.7 ms   超一帧  0/80
+  ── serve_search_dt = 1-30 预算  6ms ──
+    from z=1.6  ok 80/80  p50   6.1  p90   6.4  max   7.4 ms   超一帧  0/80
+    from z=2.4  ok 80/80  p50   6.1  p90   6.4  max  10.0 ms   超一帧  0/80
+    from z=3.1  ok 80/80  p50   6.1  p90   6.3  max   6.7 ms   超一帧  0/80
+
+── F. 连续转视角（瞄准点每次挪一小步）──
+     ★ 这才是实战路径；随机跳瞄准点属于「视角乱甩」的极端。
+     ★ 同一发球只建一次 plan，全程只挪瞄准点 —— 与实战一致。
+  步长 0.03 迭代 8  基线（提示 + 8 次二分）         p50   0.32  p90  19.08  max   32.51 ms  超一帧  5/41  均候选  15.1  误差 0.201 m
+  步长 0.03 迭代 4  ★ 4 次二分                p50   0.33  p90   1.09  max   24.22 ms  超一帧  3/41  均候选   9.7  误差 0.197 m
+  步长 0.03 迭代 3  ★ 3 次二分                p50   0.31  p90  24.20  max   28.78 ms  超一帧 12/41  均候选  53.7  误差 0.286 m
+  步长 0.03 迭代 4  对照：关掉提示                p50   9.30  p90  18.79  max   21.63 ms  超一帧 11/41  均候选  62.2  误差 0.197 m
+  步长 0.06 迭代 4  步长翻倍 + 提示              p50   0.51  p90  17.47  max   19.16 ms  超一帧  3/21  均候选  17.9  误差 0.210 m
+  步长 0.06 迭代 8  步长翻倍、无提示               p50  12.63  p90  28.35  max   37.71 ms  超一帧 10/21  均候选  59.1  误差 0.201 m
+
+── G. 逐帧跑真实预览路径（发球态转视角 3 秒）──
+     每帧挪 0.03 m 瞄准点（≈ 按住方向键），量的是每帧开销。
+  一次跑完（改之前）            帧 p50  0.019  p90 18.508  max  61.391 ms  超一帧 18/180  建任务 60 次
+  摊销 6 个/帧（现在）         帧 p50  1.425  p90  2.175  max   4.089 ms  超一帧  0/180  建任务 60 次
+  摊销 4 个/帧             帧 p50  0.987  p90  1.635  max   2.504 ms  超一帧  0/180  建任务 60 次
+  摊销 12 个/帧            帧 p50  2.780  p90  3.970  max   6.724 ms  超一帧  0/180  建任务 60 次
+
+── C. 轨迹提示线采样 ──
+  C1 _sim_serve_polyline (2.2s @ 1/90)              0.084 ms/次
+
+========================================================
+ 结论 / 每帧成本
+========================================================
+  · simulate_path 单次                        0.038 ms
+  · _solve_legal_serve 一次（瞄准点变）       8.259 ms
+  · 解算缓存命中                            0.0016 ms
+  · 预览重画（命中路径）= polyline + 1×simulate_path ≈  0.117 ms
+
+  发球态实际开销：
+    · 玩家站着瞄准（缓存命中）→ 每 0.12 s 仅重画线 ≈  0.117 ms
+    · 转视角（未命中）→ 每 0.12 s 一次    8.259 ms
+    · 出手 → 复用预览的解，≈ 0 ms（原来一次  149.058 ms）
+  60 fps 一帧预算 = 16.67 ms
+========================================================
+ERROR: 3 RID allocations of type 'N13RendererDummy15MaterialStorage13DummyMaterialE' were leaked at exit.
+ERROR: 2 RID allocations of type 'N13RendererDummy15MaterialStorage11DummyShaderE' were leaked at exit.
+ERROR: 3 RID allocations of type 'N13RendererDummy9DummyMeshE' were leaked at exit.
+ERROR: 3 RID allocations of type 'N17RendererSceneCull8InstanceE' were leaked at exit.
+ERROR: Pages in use exist at exit in PagedAllocator: N20RasterizerSceneDummy21GeometryInstanceDummyE
+   at: ~PagedAllocator (./core/templates/paged_allocator.h:170)
+WARNING: Leaked instance dependency: Bug - did not call instance_notify_deleted when freeing.
+   at: ~Dependency (servers/rendering/storage/utilities.cpp:56)
+WARNING: Leaked instance dependency: Bug - did not call instance_notify_deleted when freeing.
+   at: ~Dependency (servers/rendering/storage/utilities.cpp:56)
+WARNING: Leaked instance dependency: Bug - did not call instance_notify_deleted when freeing.
+   at: ~Dependency (servers/rendering/storage/utilities.cpp:56)
+WARNING: 14 ObjectDB instances were leaked at exit (run with `--verbose` for details).
+   at: cleanup (core/object/object.cpp:2536)
+ERROR: 2 resources still in use at exit (run with --verbose for details).
+   at: clear (core/io/resource.cpp:822)

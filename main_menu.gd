@@ -44,6 +44,8 @@ var _last_draw: Dictionary = {}
 var _season_news: Dictionary = {}
 ## 本次回主菜单新解锁的称号 id。_refresh 里填、状态卡上展示。
 var _new_titles: Array[String] = []
+## 当前面板里的五个难度按钮。微调滑杆拖动时用它更新高亮（只改样式，不重建）。
+var _diff_buttons: Array[Button] = []
 
 
 func _ready() -> void:
@@ -448,6 +450,10 @@ func _open(key: String) -> void:
 	#   之所以之前没炸：_shell 消费后就清了；这里再清一次是为了覆盖
 	#   「面板被 Esc 关掉、_shell 早已跑完」这条路径。
 	_shell_footer = null
+	# ★ 同理清难度按钮表：_panel_start() 重建时会往里塞新按钮，
+	#   不清的话每开一次面板就多一批上一轮已释放的节点
+	#   （_sync_diff_buttons 遍历到它们会报 invalid access）。
+	_diff_buttons.clear()
 	var body: Control = null
 	var title := ""
 	var width := 640.0
@@ -582,6 +588,110 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 # ───────────── ① 开始比赛 ─────────────
+## 难度微调行：一条 0.00~4.00 的滑杆 + 实时读数 + 「归到整档」按钮。
+##
+## 每次开面板都重建 —— 不能复用同一个节点：`_open()` 会把上一个面板的
+## 子树整个 free 掉，复用成员变量就会往已释放的节点上 add_child。
+func _build_fine_tune() -> Control:
+	var box := UiKit.vbox(6)
+
+	# ★ 这里**不**因为「有未完成联赛」就隐藏微调。
+	#   我第一版写了 `if Game.tournament_active(): return` —— 实拍才看清是错的：
+	#   面板顶上已经写明「下面的难度用于**自由对战**」，也就是说这一栏照常生效
+	#   （有联赛时被劫持的是**赛事场次**，不是这个面板）。既然难度能选，
+	#   微调就该能拖 —— 凭空少一个功能比多一行字更糟。
+	#   真正锁难度的是排位和赛事场次，而这两个都不从这个面板进场。
+	#   有区别的是**去哪打**：赛事那一场的难度跟对手走，要去联赛面板点「开始本场」。
+
+	# ★ 布局压成**两行**（标题+读数 / 滑杆+按钮），别做成三行。
+	#   实拍过：三行会把下面的「模式」那栏顶出可视区，而面板一旦超高，
+	#   滚轮滚的是**外层**（不是面板内的 ScrollContainer）——
+	#   表现是「滚一下整个面板消失」，玩家以为面板坏了。
+	#   省下一行的收益远大于把说明写全。
+	var head := UiKit.hbox(10)
+	head.add_child(UiKit.label("微调", 14, UiKit.TEXT_DIM))
+	# 读数要能说清「现在算哪一档」：t=1.35 落在普通(1) 与困难(2) 之间，
+	# 只显示「1.35」玩家不知道偏哪边，所以带上偏向。
+	var val := UiKit.label("", 14, UiKit.ACCENT)
+	val.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	val.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(val)
+	var rst := UiKit.button("回整档", 13, Vector2(74, 26))
+	# 「回整档」三个字看不出是干什么的，而面板里没有第二行可以写说明。
+	rst.tooltip_text = "回到最近的那个整数档（简单/普通/困难/专家/大师）"
+	head.add_child(rst)
+	box.add_child(head)
+
+	var s := UiKit.slider(1.0)
+	s.min_value = 0.0
+	s.max_value = 4.0
+	# 0.05 一格：比它更细玩家分辨不出，再细只是让存档里多几个无意义的小数。
+	s.step = 0.05
+	s.value = Game.difficulty_t
+	s.custom_minimum_size = Vector2(0, 22)
+	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	s.tooltip_text = "在两档之间连续微调。停在整数就等于那一档的手感。"
+	box.add_child(s)
+
+	var refresh := func() -> void:
+		var t: float = Game.difficulty_t
+		var near := int(round(t))
+		if absf(t - float(near)) < 0.001:
+			val.text = "%.2f（%s）" % [t, _diff_name(near)]
+		elif t < float(near):
+			val.text = "%.2f（偏%s）" % [t, _diff_name(near - 1)]
+		else:
+			val.text = "%.2f（偏%s）" % [t, _diff_name(near)]
+	refresh.call()
+
+	s.value_changed.connect(func(x: float) -> void:
+		Game.set_difficulty_t(x)
+		refresh.call()
+		# ★ 不重建整个面板：那会把手焦点丢在滑杆上（拖到一半面板重建 → 拖不动）。
+		#   只更新受影响的两个控件：读数和五档按钮的高亮。
+		_sync_diff_buttons()
+	)
+	rst.pressed.connect(func() -> void:
+		Game.set_difficulty_t(float(Game.difficulty))
+		refresh.call()
+		_sync_diff_buttons()
+	)
+	return box
+
+
+func _diff_name(i: int) -> String:
+	var names := ["简单", "普通", "困难", "专家", "大师"]
+	return names[clampi(i, 0, 4)]
+
+
+## 把五档按钮的高亮同步到当前难度。微调滑杆拖动时调它。
+## ★ 只能改样式不能重建按钮 —— 重建会毁掉按下状态，表现为「点不中」；
+##   而且重建会把焦点从滑杆抢走，拖到一半面板重建 = 拖不动。
+## ★ 提升/降级都必须四个状态一起设，只设 normal 会出现半吊子高亮
+##   （底色变了、字体还是 primary 的深色）。这套配色只在 UiKit 里有一份，
+##   所以调用 promote/demote 而不是在这里复刻。
+func _sync_diff_buttons() -> void:
+	_diff_buttons.clear()
+	_collect_diff_buttons(self)
+	var cur: int = Game.difficulty
+	for b: Button in _diff_buttons:
+		var idx: int = int(b.get_meta("diff_index", -1))
+		if idx < 0:
+			continue
+		if idx == cur:
+			UiKit.button_promote(b, UiKit.ACCENT)
+		else:
+			UiKit.button_demote(b)
+
+
+## _diff_buttons 的成员声明在文件顶部（见 var _diff_buttons: Array[Button] = []）。
+func _collect_diff_buttons(n: Node) -> void:
+	for c in n.get_children():
+		if c is Button and c.has_meta("diff_index"):
+			_diff_buttons.append(c as Button)
+		_collect_diff_buttons(c)
+
+
 func _panel_start() -> Control:
 	var v := UiKit.vbox(16)
 
@@ -617,6 +727,9 @@ func _panel_start() -> Control:
 			b = UiKit.button_primary(names[d], 16, UiKit.ACCENT, Vector2(104, 50))
 		else:
 			b = UiKit.button(names[d], 16, Vector2(104, 50))
+		# ★ 记下这是第几档：微调滑杆拖动时要靠它更新高亮，
+		#   而那时不能重建按钮（重建会毁掉按下状态，表现为「点不中」）。
+		b.set_meta("diff_index", d)
 		b.pressed.connect(func() -> void:
 			Game.set_difficulty(d)
 			_open("start")
@@ -624,10 +737,19 @@ func _panel_start() -> Control:
 		row.add_child(b)
 	v.add_child(row)
 	v.add_child(UiKit.label(descs[Game.difficulty], 14, UiKit.TEXT_DIM))
+
+	# ── 精细微调（2026-10-04）──
+	# ★ 为什么在五档按钮下面还要一个滑杆：底层早就支持连续难度
+	#   （`_tier5()` 线性插值，排位 21 个段位一直在用），但面板只能选 5 个点。
+	#   于是「比普通难一点、没到困难」——也就是大多数玩家的实际需求 ——
+	#   无处表达。这一行不新增任何机制，只是把已有的浮点档位暴露出来。
+	#
+	#   零行为变化：滑杆停在整数时 `_diff_t` 与原来逐位相等
+	#   （回归探针 A 组守着这条）。所以「不拖它」= 行为与改动前完全一样。
+	v.add_child(_build_fine_tune())
 	v.add_child(UiKit.spacer(8))
 
-	# ── 单打 / 双打（自动切换）/ 双打（队友 AI）──
-	# 三选一。存进 Game 的是「doubles 开关 + partner_ai 开关」两个 bool：
+	# ── 单打 / 双打（自动切换）/ 双打（队友 AI）──	# 三选一。存进 Game 的是「doubles 开关 + partner_ai 开关」两个 bool：
 	# 赛事那条链路（tournament.gd）全按 1v1 写的，用 bool 隔开最不容易串。
 	v.add_child(UiKit.label("模式", 18, UiKit.TEXT))
 	var mrow := UiKit.hbox(8)
@@ -1036,6 +1158,17 @@ func _quest_fill_life(v: Control) -> void:
 	# 免得玩家拿它和每日任务比，觉得「被砍了」。
 	v.add_child(UiKit.para("一次性成就 —— 领完就没了，是刚起步时的资金。 "
 		+ "日常收入请看「每日任务」。", 14, UiKit.TEXT_DIM, 760))
+	# ── 一键领取（用户 2026-10-06 要的）──
+	# ★ 每日 / 每周两个页签早就有「全部领取」了，生涯成就这边一直只能一条条点：
+	#   二十多条成就里躺着七八个可领的，玩家得点七八次 —— 实际结果就是干脆不领。
+	# ★ 只在**真的有可领取**时才放这个按钮：平时摆一个点不动的灰按钮只是噪音，
+	#   而「可领取个数」本身也是给玩家看的进度信息。
+	var n := Game.claimable_count()
+	if n > 0:
+		var ball := UiKit.button_primary("一键领取全部成就（%d 个）" % n, 18,
+			UiKit.ACCENT_2, Vector2(0, 52))
+		ball.pressed.connect(_claim_life_all)
+		v.add_child(ball)
 	for q: Dictionary in Game.QUESTS:
 		v.add_child(_quest_row(q, Game.quest_progress(q), Game.quest_goal(q),
 			Game.is_quest_complete(q), Game.is_quest_claimed(q), int(q["reward"]),
@@ -1153,6 +1286,11 @@ func _claim_weekly_all() -> void:
 
 func _claim_life(q: Dictionary) -> void:
 	Game.claim_quest(q)
+	_open("quests")
+
+
+func _claim_life_all() -> void:
+	Game.claim_all()
 	_open("quests")
 
 

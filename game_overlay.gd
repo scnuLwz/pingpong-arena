@@ -129,6 +129,19 @@ func open_result(d: Dictionary) -> void:
 		UiKit.ACCENT_2 if won else UiKit.ACCENT))
 	_body.add_child(head)
 
+	# ★ 赛后评价称号（用户 2026-10-06）：整块面板里**字号最大**的一行，居中。
+	#   贴在「本局结束 / 胜负」正下方 —— 玩家扫一眼就知道这一局打得怎么样，
+	#   再往下才是比分、过程数据、金币这些明细。
+	#   ★ 称号本身由 pingpong_game.match_title() 这个**纯函数**算好（它能被探针验），
+	#     面板只负责把它画大，不参与判定。
+	#   ★ 赢给金色、输给灰色：称号是**评价**不是警报，输的时候用乒乓红会像报错。
+	var title := String(d.get("title", ""))
+	if not title.is_empty():
+		var tl := UiKit.label(title, 52, UiKit.GOLD if won else UiKit.TEXT_DIM)
+		tl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		tl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		_body.add_child(tl)
+
 	var score := UiKit.hbox(12)
 	score.add_child(UiKit.label("比分", 17, UiKit.TEXT_DIM))
 	score.add_child(UiKit.label("%d : %d" % [own, opp], 30, UiKit.TEXT))

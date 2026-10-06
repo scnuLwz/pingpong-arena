@@ -325,9 +325,21 @@ func simulate_apex(from: Vector3, vel: Vector3, max_time: float = 5.0,
 ##     几毫米浮点/分支顺序差，1~3 mm 足够 —— 给大了会把「贴网短球」
 ##     这一整档全部毙掉（实测 22 mm → 18 个落点只接住 6 个）。
 ##   调用方：_solve_legal_serve（以及 _build_serve_traj，两者必须同值）。
+##
+## ★★ `stop_after_events`（2026-10-04，修「发球时一卡一卡」的第二刀）：
+##   > 0 时，累计到这么多事件就立刻收工。**默认 0 = 跑满 max_time（原行为不变）**。
+##
+##   `_solve_legal_serve` 只关心「前两个事件是不是 B+1 → B-1」（`is_legal_serve`
+##   只看 events[0] / events[1]）以及第二跳的坐标，所以它传 2。
+##   不传的话：一发正常发球 `max_time = 2.5 s / dt = 1/60` = **150 步**，
+##   而第二跳在第 ~66 步就已经落地了 —— 后面 80 多步纯属白算，
+##   一个候选浪费 0.1 ms，180 个候选就是 18 ms。
+##   ★ 对 `is_legal_serve` 的判定**完全等价**（它本来也只读前两个事件），
+##     不是近似 —— 这正是它比「把 dt 放粗」更安全的地方。
 func simulate_path(from: Vector3, vel: Vector3, spin: float = 0.0,
 				   max_time: float = 3.0, dt: float = 1.0 / 120.0,
-				   net_clearance: float = 0.0) -> Dictionary:
+				   net_clearance: float = 0.0,
+				   stop_after_events: int = 0) -> Dictionary:
 	var p := from
 	var v := vel
 	var sp := spin
@@ -338,6 +350,10 @@ func simulate_path(from: Vector3, vel: Vector3, spin: float = 0.0,
 	var events: Array = []
 	var bounces: Array = []
 	while t < max_time:
+		# ★ 收工判据放在循环头：NET 分支是 `continue`、台面分支也是 `continue`，
+		#   放这里三种出口都覆盖得到，且只多跑一次循环头的比较。
+		if stop_after_events > 0 and events.size() >= stop_after_events:
+			break
 		var acc := Vector3(0, -gravity, 0)
 		var spd := v.length()
 		if spd > 0.0001:
@@ -419,8 +435,16 @@ func is_legal_serve(events: Array, server_side: int) -> bool:
 ##   落点（首次接触的 z）对速度大小是单调的（越快飞得越远），
 ##   所以二分必定收敛，而且天然不会「越算越快」。
 ##   打网 / 提前落地一律算「还没飞到」，往快的一侧走。
+## search_dt：内部「找第一次接触」用的步长。默认 1/120 是留给**回球落点**的精度。
+##
+## ★ 发球解算器（pingpong_game._solve_legal_serve）可以把 search_dt 放粗到 1/60：
+##   它调本函数只是为了给二分提供「落点 z 单调于速度大小」这个比较量，
+##   而解出来的速度**随后还要过 simulate_path(dt = serve_solve_dt) 的合规校验** ——
+##   合法性不由这里判定。
+##   粗一档 = 子模拟步数减半。实测发球解算 150 ms → 35 ms，
+##   代价只是首跳落点估计偏几毫米。
 func solve_velocity(from: Vector3, target: Vector3, flight_time: float,
-					iterations: int = 16) -> Vector3:
+					iterations: int = 16, search_dt: float = 1.0 / 120.0) -> Vector3:
 	var t := maxf(flight_time, 0.05)
 	# 方向：拿无阻力解析解的方向当搜索方向（它已经是「朝 target 且带正确抬升」的）
 	var g0 := (target - from) / t
@@ -448,7 +472,7 @@ func solve_velocity(from: Vector3, target: Vector3, flight_time: float,
 		for _i in range(iterations):
 			var s := 0.5 * (lo + hi)
 			var v := dir * (base * s)
-			var r := simulate_first_contact(from, v, 3.0)
+			var r := simulate_first_contact(from, v, 3.0, search_dt)
 			var p: Vector3 = r["pos"]
 			var on_table := bool(r["on_table"])
 			var err := Vector3(target.x - p.x, 0.0, target.z - p.z)
@@ -464,7 +488,7 @@ func solve_velocity(from: Vector3, target: Vector3, flight_time: float,
 			else:
 				lo = s
 		# 用当前最好解的落点误差，反过来修方向（水平误差 / 飞行时间 ≈ 速度增量）
-		var rc: Dictionary = simulate_first_contact(from, best_v, 3.0)
+		var rc: Dictionary = simulate_first_contact(from, best_v, 3.0, search_dt)
 		var lp: Vector3 = rc["pos"]
 		var corr := Vector3((target.x - lp.x) / t, 0.0, (target.z - lp.z) / t)
 		dir = (best_v + corr).normalized()

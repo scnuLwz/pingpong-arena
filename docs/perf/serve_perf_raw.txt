@@ -1,0 +1,53 @@
+Godot Engine v4.7.2.stable.mono.official.ed1daf0bf - https://godotengine.org
+
+========================================================
+ 性能量化探针（无头 CPU 计时）
+========================================================
+  当前 serve_solve_iters=8  serve_search_dt=0.01667
+
+── A. simulate_path 单次成本 ──
+  基准弹道 from=(0.0, 1.05, 1.5) 初速 6.71 m/s
+  A1 解算器档 (2.5s, dt=1/60, clr=0.003)                0.022 ms/次
+  A2 落点提示档 (1.6s, dt=1/60, clr=0)                   0.019 ms/次
+
+── B. _solve_legal_serve 端到端 ──
+  候选 = own_x 5 × n_z 6 × flight 6 = 180 次（上限 200）
+  plan 含 from_x = true
+  B1 固定瞄准 from z=1.5     58.326 ms/次   命中 25/25
+  B1 固定瞄准 from z=2.2     12.980 ms/次   命中 25/25
+  B1 固定瞄准 from z=3.0     10.862 ms/次   命中 25/25
+  B2 瞄准点每轮变          23.644 ms/次
+  B3 ★最坏（强制跑满 200）  56.499 ms/次
+
+── B4. _solve_serve_cached 缓存 ──
+  首次（未命中）ok=true
+  B4a 缓存命中（同 from/瞄准/自旋）                            0.001 ms/次
+  B4b 未命中（每轮改瞄准点）                                  21.304 ms/次
+  B5 连续小步转视角          24.547 ms/次   快路命中 16/40
+
+── C. 轨迹提示线采样 ──
+  C1 _sim_serve_polyline (2.2s @ 1/90)              0.112 ms/次
+
+── D. ★粗搜索有没有把「解得出合法发球」的能力弄丢 ──
+     （每个配置扫 60 个随机瞄准点，统计 ok 比例）
+  精细 16 / 1/120（原设定）         ok 60/60     47.956 ms/次
+  粗搜索 8 / 1/60（现在）           ok 60/60     17.803 ms/次
+
+========================================================
+ 结论 / 每帧成本
+========================================================
+  · simulate_path 单次                        0.022 ms
+  · _solve_legal_serve 一次（瞄准点变）      23.644 ms
+  · 解算缓存命中                            0.0014 ms
+  · 预览重画（命中路径）= polyline + 1×simulate_path ≈  0.101 ms
+
+  发球态实际开销：
+    · 玩家站着瞄准（缓存命中）→ 每 0.12 s 仅重画线 ≈  0.101 ms
+    · 转视角（未命中）→ 每 0.12 s 一次   23.644 ms
+    · 出手 → 复用预览的解，≈ 0 ms（原来一次  149.058 ms）
+  60 fps 一帧预算 = 16.67 ms
+========================================================
+WARNING: 5 ObjectDB instances were leaked at exit (run with `--verbose` for details).
+   at: cleanup (core/object/object.cpp:2536)
+ERROR: 2 resources still in use at exit (run with --verbose for details).
+   at: clear (core/io/resource.cpp:822)

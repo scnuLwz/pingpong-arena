@@ -93,6 +93,44 @@ static func button_primary(text: String, font_size: int = 20,
 	return b
 
 
+## 把一个**已经存在**的按钮改成 primary 外观。
+## 与 `button_demote` 成对，供「选中项会随外部状态变化」的场景用
+## （如难度微调滑杆拖动时更新五档按钮的高亮）。
+static func button_promote(b: Button, color: Color = ACCENT) -> void:
+	if b == null:
+		return
+	b.add_theme_color_override("font_color", Color(0.10, 0.08, 0.09))
+	b.add_theme_color_override("font_hover_color", Color(0.06, 0.05, 0.06))
+	b.add_theme_color_override("font_pressed_color", Color(0.06, 0.05, 0.06))
+	b.add_theme_stylebox_override("normal", _flat(color, 9))
+	b.add_theme_stylebox_override("hover", _flat(color.lightened(0.16), 9))
+	b.add_theme_stylebox_override("pressed", _flat(color.darkened(0.16), 9))
+	b.add_theme_stylebox_override("disabled", _flat(Color(1, 1, 1, 0.05), 9))
+
+
+## 把按钮从 primary 样式**改回**普通样式。
+##
+## 为什么需要它（而不是让调用方自己remove_theme_stylebox_override）：
+##   1. `remove_theme_stylebox_override` 会退回主题默认样式，视觉上不是
+##      「普通按钮」而是「没上过色的按钮」—— 两者的底色/描边都不一样，
+##      挨在一起看就是「有一个按钮缺了层皮」。
+##   2. 配色只有这一处知道（`_flat(..., LINE, 1)` 那组常量）。
+##      在外面复刻一份，UiKit 改配色时这边会静默留在旧值上。
+##   3. 只设`normal` 会出现半吊子高亮：底色变了、字体还是 primary 的深色。
+##      必须四个状态一起设。
+static func button_demote(b: Button) -> void:
+	if b == null:
+		return
+	b.add_theme_color_override("font_color", TEXT)
+	b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
+	b.add_theme_color_override("font_pressed_color", Color(1, 1, 1))
+	b.add_theme_color_override("font_disabled_color", TEXT_MUTE)
+	b.add_theme_stylebox_override("normal", _flat(Color(1, 1, 1, 0.07), 9, LINE, 1))
+	b.add_theme_stylebox_override("hover", _flat(Color(1, 1, 1, 0.14), 9, LINE, 1))
+	b.add_theme_stylebox_override("pressed", _flat(Color(1, 1, 1, 0.11), 9, LINE, 1))
+	b.add_theme_stylebox_override("disabled", _flat(Color(1, 1, 1, 0.04), 9, LINE, 1))
+
+
 # ───────────── 容器 ─────────────
 static func panel(min_size: Vector2 = Vector2.ZERO) -> PanelContainer:
 	var p := PanelContainer.new()

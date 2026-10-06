@@ -74,6 +74,12 @@ const BH_REST_POS := Vector3(0.210, -0.34, -0.50)
 ## 早期指头更细、前臂更长时 90° 会被掌盖住 —— 改手部尺寸时这个值要重扫。）
 const HAND_ROLL_DEG: float = 90.0
 
+## 球台半宽 / 半长（m），用来判断「拍子是否在台面上方」（见 _update_crouch_lift）。
+## ★ 跨脚本硬约定：与 camera_controller.table_half_width / table_half_length、
+##   pingpong_ball 的同名字段同值，改要一起改。
+const TABLE_HALF_WIDTH := 0.7625
+const TABLE_HALF_LENGTH := 1.37
+
 @export_group("挥拍（反手：向左前抡）")
 ## 挥拍最大角度（度）。绕手腕转，55° 时拍头甩到画面下方之外又收回，力度感够。
 @export var swing_degrees: float = 55.0
@@ -153,9 +159,22 @@ const HAND_ROLL_DEG: float = 90.0
 ## 刀面中心的世界 y 下限（米）—— 硬保险，和俯仰角无关。
 ## 上面那条抬升只按「蹲多深」算，管不住「玩家把视线压多低」：
 ## rig 在相机前方 0.34 m，低头就能把这 0.34 m 折成一段下沉。
-## 所以再加一条绝对下限：蹲着时刀面中心一旦低于这个值，就把整条 rig 顶上去。
+## 所以再加一条绝对下限：刀面中心一旦低于这个值，就把整条 rig 顶上去。
 ## 0.890 = 台面 0.760 + 刀面半高 0.084（实测 AABB [1.223,1.390]）+ 余量 0.046
+##
+## ★ 2026-10-04 用户报「在球台附近低头时球拍与球台穿模」。实测
+##   （`tests/_diag_paddle_table.gd` 扫俯仰角 × 探拍两档）：
+##     站着低头**本身不穿** —— 俯到 -55° 时拍子最低点 0.827，还在台面(0.760)之上；
+##     真正会穿的是**低头 + 探拍**（按住 Shift 把拍子再往前送 0.35 m）：
+##     俯到 -40° 就穿台，-70° 时拍面中心掉到 0.564、拍子最低点 0.498 ——
+##     比台面低 26 cm，半个拍子埋进台体里。
+##   根因见 _update_crouch_lift()：这条下限当时被 `c <= 0.01` 挡着，只在蹲下时生效。
 @export var blade_floor_y: float = 0.890
+## 台面范围的判定外扩（m）。只有拍面中心的水平投影落进「台面 ± 这个值」以内，
+## 才启用 blade_floor_y 那条下限 —— 站在台外低头是正常俯视，
+## 把拍子硬顶在半空反而僵。
+## ★ 判断用的是 x/z，而抬升只改 y，所以不存在「抬起→出界→落下→回界」的抖动。
+@export var blade_clear_pad: float = 0.12
 
 @export_group("待机")
 @export var idle_bob_degrees: float = 1.2
@@ -288,12 +307,16 @@ var _idle_phase: float = 0.0
 var _walk_phase: float = 0.0
 var _sway: Vector2 = Vector2.ZERO
 var _last_basis: Basis = Basis.IDENTITY
+## rig 在场景里配的基准位。每帧的垂直修正都从它重新算 ——
+## ★ 不能只在上一帧的 position 上累加：修正量里有横向分量，会逐帧漂移。
+var _rig_home: Vector3 = Vector3.ZERO
 var _charge: float = 0.0
 ## 探拍量 0..1，见 set_reach_extend()。
 var _reach_extend: float = 0.0
 
 
 func _ready() -> void:
+	_rig_home = position
 	_player = _find_player()
 	_cam = get_parent() as Camera3D
 	if _cam:
@@ -607,26 +630,39 @@ func _process(delta: float) -> void:
 	_update_crouch_lift()
 
 
-## 蹲姿抬升：把整条 rig 往上提，抵消一部分相机下沉，别让刀面埋进台面。
-## 作用在 rig 自己的 local y 上（不动 _paddle，免得和挥拍 / 蓄力的位移打架）。
+## rig 垂直修正：蹲姿抬升 + 「刀面不得埋进台面」的硬下限。
+## 都作用在 rig 自己的位置（不动 _paddle，免得和挥拍 / 蓄力的位移打架）。
 func _update_crouch_lift() -> void:
 	var c := 0.0
 	if _player != null and _player.has_method("crouch_amount"):
 		c = clampf(float(_player.call("crouch_amount")), 0.0, 1.0)
-	position.y = crouch_lift * c
-	if c <= 0.01 or _head == null or not is_instance_valid(_head):
+	# ★ 每帧从**基准位整体重置**，而不是照旧只写 y：下面的下限补偿是沿世界竖直
+	#   方向做的，在带俯仰的父空间里会解出横向分量；只重置 y 的话那些分量会逐帧
+	#   累积，拍子会慢慢飘出画面（原实现只写 y 也能活，是因为它只做抬升、不带横向）。
+	position = _rig_home + Vector3(0.0, crouch_lift * c, 0.0)
+	if _head == null or not is_instance_valid(_head):
 		return
-	# 硬下限：低头看台面时 rig 会跟着俯仰折下去，这里按实测的刀面世界 y 补差。
-	# ★ 抬升加的是 rig 的**局部** y，而 rig 跟着相机俯仰 —— 低头时局部 y 只有
-	#   cos(pitch) 的分量落在世界 y 上。不折算的话补 0.145 实际只顶上去 0.114，
-	#   实测低头 38° 仍然差 3 cm 没到位。
-	var k := clampf(global_transform.basis.y.y, 0.25, 1.0)
-	# 两遍：俯仰大时「补差 → 姿态微变 → 再补差」的一次近似不够
-	for _i in range(2):
-		var deficit := blade_floor_y - _head.global_position.y
-		if deficit <= 0.0:
-			break
-		position.y += deficit / k
+	# ── 硬下限：刀面中心不得低于 blade_floor_y ──
+	# ★ 这里**不能**再夹一句 `c > 0`（原实现就是那样，于是只在蹲下时生效）。
+	#   站着时头确实不下降，但探头会随俯仰折成一段下沉、探拍又把它从 0.34 m
+	#   拉长到 0.69 m —— 低头 + 探拍照样穿台（实测见 blade_floor_y 的注释）。
+	var probe: Vector3 = _head.global_position
+	if absf(probe.x) > TABLE_HALF_WIDTH + blade_clear_pad:
+		return
+	if absf(probe.z) > TABLE_HALF_LENGTH + blade_clear_pad:
+		return
+	var deficit := blade_floor_y - probe.y
+	if deficit <= 0.0:
+		return
+	# 沿**世界竖直**方向抬，再换算成父空间里的位移。
+	# ★ 不能沿 rig 的 local y 抬：低头时局部 y 几乎是水平的，想用它抬起世界高度
+	#   得除以接近 0 的 cos —— -89° 时 cos=0.017，局部要挪 57 倍，拍子瞬间被甩到
+	#   二十米之外（屏幕上是「拍子凭空消失」）。换算成世界位移就没有这个病。
+	var p := get_parent() as Node3D
+	if p == null:
+		position.y += deficit
+		return
+	position += p.global_transform.basis.inverse() * Vector3(0.0, deficit, 0.0)
 
 
 func _update_swing(delta: float) -> void:

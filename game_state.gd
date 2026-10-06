@@ -747,6 +747,20 @@ var weekly: Dictionary = {}
 var games_played: int = 0
 ## 上一次选的难度（0 简单 / 1 普通 / 2 困难 / 3 专家 / 4 大师）。开局面板会改它，游戏读它。
 var difficulty: int = 1
+## ★★ 难度的**真实精度**（0.0~4.0 浮点），2026-10-04 加。
+##
+## 为什么在已经有 difficulty 的情况下再加一个：
+##   底层早就支持连续难度了（pingpong_game._diff_t + `_tier5()` 线性插值，
+##   排位的21 个段位一直在用），但面板只能选 5 个离散点。
+##   于是「我想比普通难一点、但没到困难」这种最常见的诉求无处表达——
+##   而这恰恰是**大多数玩家**的实际手感需求（5 档里3 档对他们都太难或太简单）。
+##
+## 两者的分工（别混）：
+##   difficulty_t = 真实值，进比赛时喂 `_diff_t`。
+##   difficulty   = `round(difficulty_t)`，只给 UI 显示和局内 Tab 循环用。
+##   浮点为整时两者相等 → **既有手感逐位不变**（回归探针 A 组守着这条）。
+@export_range(0.0, 4.0, 0.05) var difficulty_t: float = 1.0
+
 ## 双打模式开关。主菜单里选，进比赛时 pingpong_game.apply_preferences() 读它。
 ##
 ## ★ 为什么是「开关」而不是「模式枚举」：赛事 / 联赛那条链路（tournament.gd）
@@ -861,6 +875,7 @@ func _to_dict() -> Dictionary:
 		"claimed": claimed,
 		"games_played": games_played,
 		"difficulty": difficulty,
+		"difficulty_t": difficulty_t,
 		"doubles": doubles,
 		"partner_ai": partner_ai,
 		"tournament": tournament,
@@ -970,6 +985,9 @@ func _from_dict(d: Dictionary) -> void:
 	claimed = _to_str_array(d.get("claimed", []))
 	games_played = int(d.get("games_played", 0))
 	difficulty = clampi(int(d.get("difficulty", 1)), 0, 4)
+	# ★ 旧存档没有 difficulty_t（2026-10-04 之前）→ 用整数档补上，
+	#   不能默认 1.0：那会把所有老玩家从自己选的档强行拉到「普通」。
+	difficulty_t = clampf(float(d.get("difficulty_t", float(difficulty))), 0.0, 4.0)
 	doubles = bool(d.get("doubles", false))
 	partner_ai = bool(d.get("partner_ai", false))
 	var tt: Variant = d.get("tournament", {})
@@ -1056,6 +1074,17 @@ func _normalize_tournament(raw: Dictionary) -> Dictionary:
 
 func set_difficulty(d: int) -> void:
 	difficulty = clampi(d, 0, 4)
+	# ★ 选整档时要把浮点精度也带走，否则会出现「面板显示简单、实际是 1.35」
+	#   这种状态残留（滑杆动过之后 difficulty_t 就与 difficulty 脱钩了）。
+	difficulty_t = float(difficulty)
+	save_profile()
+
+
+## 设定连续难度（0.0~4.0）。整数值等价于set_difficulty(d)，
+## 所以走这条路的既有行为一点没变。
+func set_difficulty_t(t: float) -> void:
+	difficulty_t = clampf(t, 0.0, 4.0)
+	difficulty = clampi(int(round(difficulty_t)), 0, 4)
 	save_profile()
 
 
@@ -1162,6 +1191,14 @@ func reset_all() -> void:
 	#   但它自己会 save_profile + emit，这里后面统一 save，重复写无害。
 	abandon_tournament()
 	tour_entry = false
+	# ★ 模式偏好与难度档也要复位（同第 1141 行开关那批的思路）。
+	#   doubles / partner_ai 是**故意持久化**的偏好 —— 平时跨会话保留是对的，
+	#   但「清空全部进度」之后还留着双打偏好就说不清了：
+	#   金币归零、段位归零、赛程归零，唯独下次开局还是双打。
+	doubles = false
+	partner_ai = false
+	difficulty = 1
+	difficulty_t = 1.0
 	# 每日 / 每周一起清。★ 不清的话「重置」之后今天的任务还挂着昨天的进度，
 	#   玩家会以为是 bug。清成空字典即可，daily_ensure() 会重新抽。
 	daily = {}
@@ -2193,6 +2230,25 @@ func claimable_count() -> int:
 		if can_claim(q):
 			n += 1
 	return n
+
+
+## **一键领取**全部已达标但还没领的生涯成就，返回实际到账的金币总数。
+##
+## ★ 判据必须与 `claimable_count()` 完全同一套（都走 `can_claim`）——
+##   否则会出现「角标说有 3 个、一键领只领到 2 个」这种对不上的情况，
+##   玩家会以为按钮坏了。
+## ★ 只落一次盘：`claim_quest` 自己不写文件（和 `add_coins` 一样是纯内存操作），
+##   逐条领会让二十多条成就写二十多次存档。
+func claim_all() -> int:
+	var total := 0
+	var n := 0
+	for q: Dictionary in QUESTS:
+		if can_claim(q):
+			total += claim_quest(q)
+			n += 1
+	if n > 0:
+		save_profile()
+	return total
 
 
 # ───────────── 存档槽 ─────────────

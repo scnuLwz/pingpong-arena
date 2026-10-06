@@ -124,17 +124,12 @@ enum HitKind { NORMAL, LOOP, FLICK }   # 普通 / 正手爆冲 / 反手暴拧
 # ───────────── 难度 ─────────────
 @export_group("难度")
 @export_enum("简单", "普通", "困难", "专家", "大师") var difficulty: int = 1
-## 五档难度参数（0 简单 / 1 普通 / 2 困难 / 3 专家 / 4 大师）。
-## 每个参数都有 easy_ / normal_ / hard_ / expert_ / master_ 五个前缀：
-##   flight_time  发球飞到你半台所需时间（越小越快）
-##   spread       落点随机范围（占半台比例）
-##   reach_scale  玩家够球范围的倍率（越小越难够到）
-##   serve_spin   对手发球的侧旋强度（越大越拐，接发球越难吃准）
-##   serve_edge   对手发球把落点推向边线的程度（0 均匀 → 1 全贴边）
-##   serve_short  对手发短球（落点靠网）的概率 —— 逼玩家上前，不能直接抽
+## 五档难度参数全部收在 `DIFFICULTY_TABLE` 一张表里（0 简单 / 1 普通 /
+## 2 困难 / 3 专家 / 4 大师）。参数的取用一律走 `tune(key)`，别再直接读变量。
 ##
 ## 大师档的定位是「很难战胜」：发球又快又贴边、对手几乎不失误、
-## 玩家够球范围只有 0.60 倍。数值不是拍脑袋定的，见各参数下的推导。
+## 玩家够球范围只有 0.68 倍（0.60 会变成物理上打不到球，见表内注释）。
+##
 ## 发球飞行时间（秒）—— 越小越快、弧线越平。
 ##
 ## 这三个值原来给的是 1.50 / 1.15 / 0.85，是**错的**：
@@ -147,63 +142,63 @@ enum HitKind { NORMAL, LOOP, FLICK }   # 普通 / 正手爆冲 / 反手暴拧
 ## 理想抛物线要过网必须满足 y_net = 0.8256 + 0.864·t² >= 0.9325 → t >= 0.352 s。
 ## 所以大师档取 0.365 —— 已经贴着「能过网」的物理下限，
 ## 再快就只剩撞网一条解了（求解器会退化成一条撞网轨迹）。
-@export var easy_flight_time: float = 0.46
-@export var easy_spread: float = 0.35
-@export var easy_reach_scale: float = 1.28
+## ★★ 难度参数总表（2026-10-04 阶段 3 重构）。
+##
+## 改之前是「30 个 export × 5 档 + 10 处手写 `_tier5()` 分派」，三个毛病：
+##   ① 加第 6 档要动 40 处；
+##   ② **顺序写反编译全绿** —— 只是「大师档比专家档弱」，是最难发现的回归；
+##   ③ 调平衡得同时找齐 5 个变量，漏一个就是「反应速度上去了但回球质量没变」。
+## 现在：加档 = 每行多一个元素；调平衡 = 改一个数字；查单调性 = 看一行。
+##
+## 键 = 参数名，值 = `[简单, 普通, 困难, 专家, 大师]`。
+## ★ 每行末尾标了**语义方向**（↑/↓）—— 探针 A6 照它验单调性。
+##   「高档更强」在数值上就是「↑ 的增大、↓ 的减小」，写反了不会报错，
+##   只会让难度曲线在某一段反向爬。
+const DIFFICULTY_TABLE := {
+	# ── 基础对拉 ──
+	# 对手回球的飞行时间（秒）。越短 = 球越快 = 留给玩家的反应时间越少。↓
+	"flight_time": [0.46, 0.42, 0.40, 0.38, 0.365],
+	# 对手回球的横向散布（占半台比例）。越高越贴边线，玩家必须真的跑动。↑
+	"spread": [0.35, 0.55, 0.72, 0.86, 0.96],
+	# 够球范围的难度倍率。乘在 hit_reach_x / z / y 三个半轴上。↓
+	# ★ 大师档 0.68 意味着三轴半轴同时缩到 68% —— 横向容差满体力 0.13 m。
+	#   本来想给 0.60，探针一算：再乘上空体力的 0.55 就只剩 6 cm，
+	#   那不是「难战胜」，是物理上打不到球。0.68 + 空体力 = 0.071 m，
+	#   配合发球贴边、对手几乎不失误，已经是「认真走位才有一线机会」。
+	"reach_scale": [1.28, 1.00, 0.86, 0.78, 0.68],
 
-@export var normal_flight_time: float = 0.42
-@export var normal_spread: float = 0.55
-@export var normal_reach_scale: float = 1.00
+	# ── 对手发球（「接发球就得分」要难）──
+	# ★ 用户要「人机开球就得分较难」。原来发球只有「越快、越散」两个旋钮，
+	#   玩家站住不动就能抽回去。这三个维度才是真正影响接发球的：
+	#     serve_spin  侧旋。球落台后往侧面拐，拍面喂不正就飞出台 —— 接发球失误主因。↑
+	#     serve_edge  落点向边线偏。均匀随机时球都落半台中部，玩家不用动。↑
+	#     serve_short 短球概率。落点贴网、第二跳还在台内且很低，抽不了。↑
+	# ★ 2026-10-02 用户第二次反馈「接球得分控制在 10% 以内」后整体回调：
+	#   侧旋砍约 1/4、边线强度砍一半、短球概率砍一半。
+	"serve_spin": [0.25, 0.38, 0.58, 0.78, 1.00],
+	"serve_edge": [0.00, 0.06, 0.12, 0.20, 0.28],
+	"serve_short": [0.00, 0.00, 0.03, 0.07, 0.12],
 
-@export var hard_flight_time: float = 0.40
-@export var hard_spread: float = 0.72
-@export var hard_reach_scale: float = 0.86
-
-@export var expert_flight_time: float = 0.38
-@export var expert_spread: float = 0.86
-@export var expert_reach_scale: float = 0.78
-
-@export var master_flight_time: float = 0.365
-@export var master_spread: float = 0.96
-## 0.68 倍意味着三轴半轴同时缩到 68% —— 横向容差满体力 0.13 m。
-## 本来想给 0.60，探针一算：再乘上空体力的 0.55 就只剩 **6 cm**，
-## 那不是「难战胜」，是物理上打不到球。0.68 + 空体力 = 0.071 m，
-## 配合发球贴边、对手几乎不失误，已经是「认真走位才有一线机会」。
-@export var master_reach_scale: float = 0.68
+	# ── 对手失误（★ 见 _opponent_miss_chance 里的三个乘数）──
+	# 「完全没接到」的概率：球从他身边飞过，玩家得分。↓
+	# ★ 大师档 0.018 —— 约 55 个球才白送一分，基本等于「对手不失误」。
+	"opponent_miss": [0.34, 0.16, 0.09, 0.045, 0.018],
+	# 「接到但回球出台」的概率。和「没接到」分开是为了让画面有变化 ——
+	# 全是球从对面飞过去会很单调。↓
+	"opponent_out": [0.12, 0.06, 0.035, 0.018, 0.007],
+	# 对手回球飞行时间的倍率。0.58 s 的基数下：简单 0.68 s（慢悠悠），
+	# 大师 0.41 s（贴着抽）。↓
+	"opponent_return_flight": [1.18, 1.00, 0.90, 0.80, 0.70],
+	# 对手回球的横向散布。越高越贴边线，玩家不能站中间守株待兔。↑
+	"opponent_return_spread": [0.45, 0.66, 0.80, 0.90, 0.97],
+}
 
 # ───────────── 对手发球（「接发球就得分」要难）─────────────
-## ★ 用户要「人机开球就得分较难」。原来的发球只有「越快、越散」两个旋钮，
-##   玩家站住不动就能抽回去，所以得分太容易。这里补三个真正影响接发球的维度：
-##     serve_spin  侧旋。球落台后会往侧面拐（马格努斯 + 弹跳侧踢），
-##                 拍面喂不正就直接飞出台外 —— 这是接发球失误的主因。
-##     serve_edge  落点向边线偏。均匀随机时球大多落在半台中部，
-##                 玩家不用动；推向边线后必须真的走位才够得到。
-##     serve_short 短球概率。落点贴网时球第二跳还在台内、高度很低，
-##                 抽不了，只能搓/挑 —— 直接封死「接发球一板爆冲得分」。
-## ★ 2026-10-02 用户第二次反馈：「接球的得分控制在 10% 以内」「AI 发出来的球
+## ★ 与上面 `serve_*` 三行配套的说明留在这里（原来贴在 export 上）：
+##   ★ 2026-10-02 用户第二次反馈：「接球的得分控制在 10% 以内」「AI 发出来的球
 ##   不要太难接」。原来那组「让接发球变难」的数值是为上一版需求调的，
-##   现在整体回调：侧旋砍掉约 1/4、边线强度砍掉一半、短球概率砍一半，
-##   再叠一条发球飞行时间放慢（serve_flight_scale）。
+##   现在整体回调，再叠一条发球飞行时间放慢（serve_flight_scale）。
 ##   目标是「对手发球直接得分（我根本没碰到球）」占总局数 ≤10%。
-@export var easy_serve_spin: float = 0.25
-@export var easy_serve_edge: float = 0.00
-@export var easy_serve_short: float = 0.00
-
-@export var normal_serve_spin: float = 0.38
-@export var normal_serve_edge: float = 0.06
-@export var normal_serve_short: float = 0.00
-
-@export var hard_serve_spin: float = 0.58
-@export var hard_serve_edge: float = 0.12
-@export var hard_serve_short: float = 0.03
-
-@export var expert_serve_spin: float = 0.78
-@export var expert_serve_edge: float = 0.20
-@export var expert_serve_short: float = 0.07
-
-@export var master_serve_spin: float = 1.00
-@export var master_serve_edge: float = 0.28
-@export var master_serve_short: float = 0.12
 
 # ───────────── 接发球（★ 用户要「所有对局里都难以发球就得分」）─────────────
 @export_group("接发球（压制发球直接得分）")
@@ -365,6 +360,16 @@ enum HitKind { NORMAL, LOOP, FLICK }   # 普通 / 正手爆冲 / 反手暴拧
 @export var toss_strike_height: float = 1.11
 ## 抛球后玩家一直不击球的兜底等待（秒）—— 到点自动替他击出去，绝不挂住球局
 @export var toss_auto_strike: float = 1.9
+## 抛球途中允许比出手高度**高**多少就开始算「可以击出」（米）。
+##
+## ★ 没有这个门槛会出两种毛病（2026-10-06 一起修）：
+##   1. 球还在半空（最高比出手点高 0.59 m）就能被打出去。出手点统一成
+##      `_serve_launch_point()` 之后，那一下会变成「球当着玩家的面往下瞬移」；
+##   2. 预览线是按出手高度画的，从半空出手的球落点和它天然对不上
+##      —— 也就是用户报的「落点与预览框不一样」。
+## ★ 给一点点余量（约一帧的下落量）而不是死卡相等：球每帧掉 3~5 cm，
+##   卡死会让手感发涩，而且自动击出那条路本来就有一帧的过冲。
+@export var toss_strike_tol: float = 0.08
 ## 满蓄力的发球飞行时间倍率（越小越快）—— 这是「发球也能蓄力」的体现
 @export var serve_power_flight_scale: float = 0.60
 ## 发球球速上限（m/s）—— 用户要的「限制开球球速」，别让发球变成必杀
@@ -404,6 +409,117 @@ enum HitKind { NORMAL, LOOP, FLICK }   # 普通 / 正手爆冲 / 反手暴拧
 ## ★ 必须和 _build_serve_traj 用同一个值 —— 否则玩家看到的预览弧线
 ##   与实际球路不一致（预览能过、实际下网），会觉得是 bug。
 @export var serve_net_clearance: float = 0.003
+
+## ───────────── 发球解算的性能（2026-10-04 用户报「一卡一卡」）─────────────
+##
+## 实测（无头 CPU 计时，原生）：
+##   simulate_path 单次（2.5 s @ 1/60）               0.045 ms
+##   _solve_legal_serve 满跑 180 候选                 149 ms  ← 比 60 fps 帧预算大 9 倍
+##     成本构成 = 180 候选 × (solve_velocity 51 次子模拟 + simulate_path 150 步)
+##     ★ 51 = (二分 16 + 1) × 外层 3 轮
+##   而 `_update_serve_traj` 曾经**每 0.1 s** 跑一次它 → 每秒 1.5 s 的 CPU。
+##
+## 三处一起改，把这条路径压到「站着瞄准时 0 成本、转视角时 ~35 ms」：
+##   1. `serve_search_dt`：解算器内部二分改用 1/60 而不是 1/120（子模拟步数减半）
+##   2. `serve_solve_iters`：二分迭代 16 → 8（子模拟次数 51 → 27）
+##      ★ 二者都只让「首跳落点估计」偏几毫米 —— 合法性由 simulate_path 判定，
+##        而 simulate_path 用的仍是 serve_solve_dt，所以**不会解出非法发球**。
+##   3. `_solve_serve_cached`：from / 瞄准点 / 自旋 / 飞行时间都没变就直接复用上次解。
+##      玩家站着瞄准时命中率接近 100%，同时**出手也复用它** —— 出手瞬间不再卡。
+##
+## ── 第二轮（同一天，量了**分布**之后）──────────────────────────
+## 上面三招把**均值**打下去了，但 E 组量出来的是：
+##   p50 21 ms / p90 42 ms / max 59 ms，**55% 的单次解算都超过一帧预算**。
+##   玩家转视角时会每 0.12 s 触发一次 —— 每秒四五次掉帧，还是「一卡一卡」。
+## 补两招：
+##   4. `serve_search_dt` 再放到 **1/30**。D 组量了「第二跳离瞄准点的距离」：
+##      16/1-120 → 均 0.233 m，8/1-60 → 0.230 m，8/1-30 → 0.231 m ——
+##      **落点精度与搜索精度无关**（误差由候选网格的粗细决定，不由二分精度决定），
+##      所以放宽到 1/30 是纯赚：p50 21 → 10 ms，质量一动不动。
+##      ★ 再往下降到 1/15 就开始劣化（均 0.265 / p95 0.505），1/30 是拐点。
+##   5. `serve_solve_budget_ms`：给**预览**那条路径上时间预算（见该参数说明）。
+##
+## ── 第三轮（同一天，量了**真实路径**之后）──────────────────────
+## D/E 组每轮都换一个**随机**瞄准点 —— 那是「视角乱甩」的极端，不是日常。
+## 补了 F 组：同一发球、瞄准点每次挪 3~6 cm（= 按住方向键转视角），结果：
+##   无优化      p50 10.7 ms  p90 27.1  max 28.5  超一帧 15/41
+##   试完上面 5 招 p50  0.34 ms  p90 19.1  max 30.3  超一帧  5/41
+##   ★ 还有 12% 的预览会掉帧 —— 那正是「一卡一卡」剩下的部分。
+## 两个根因，各配一招：
+##   6. `_serve_solve_hint`（见该变量）：把上次采纳的**候选**排到搜索最前。
+##      转视角时瞄准点只挪几厘米 → 上一次那个候选通常仍然合格 →
+##      第一次尝试就返回。p50 0.34 → 0.17 ms，均候选 60 → 10。
+##      ★ 它只是**换个搜索顺序**，仍然用新瞄准点重解速度 + 重新验合法，
+##        所以**精度完全不变**（F 组误差 0.201 → 0.197 m）。
+##   7. `serve_solve_iters` 8 → **4**。F 组同一条件下：
+##      p90 19.1 → **1.1 ms**、超一帧 5/41 → 2/41、误差 0.201 → 0.197 m。
+##
+## ── 第四轮（同一天，用户第二次报「发球的时候非常卡」之后）──────────
+## ★★ 上面 7 招都只是「让**平均**更快」，仍然会有零星的一帧 20~40 ms。
+##    而玩家是按**帧**感受的：一秒里只要有几次掉帧，就是「一卡一卡」。
+##    G 组直接按帧跑真实预览路径（转视角 3 秒 = 180 帧），改之前：
+##      p50 0.04 ms  p90 27.7  **max 41.0 ms**  **超一帧 20/180**
+##    根治办法不是「再省一点」，而是**把一次搜索摊到多帧**：
+##   8. `_serve_job` + `serve_step_cands`：搜索变成逐帧推进的任务，
+##      每帧最多试 6 个候选。同一场景实测：
+##      p50 1.6 ms  p90 2.7  **max 5.5 ms**  **超一帧 0/180**
+##      ★ 它**不减少搜索量**（J7b 断言最终仍然试完整个网格）、
+##        **不降低精度** —— 这是和预算的本质区别（预算 = 砍候选，会掉精度）。
+##   9. 出手不再搜索：直接用预览发布的解（见 _serve_solution_for_release）。
+##      出手那一刻曾经有一次全量搜索（「非常卡」就是它），现在恒为 0 ms。
+##   10. 预览把**蓄力**算进去（量化成 serve_charge_preview_steps 档）：
+##       否则出手时的飞行时间与预览解对不上 —— 要么蓄力白按，要么当场重解。
+##
+## ★ 配平：`serve_solve_budget_ms` 因此**默认关掉**（-1）。
+##   它属于「砍工作量」那一类，在摊销已经把帧时间解决之后，开着只会白掉精度。
+##      ★ 再降到 3 就**真的**劣化了（误差 0.286 m、均候选 53.7）——4 是拐点。
+##      为什么降迭代几乎白送：落点由候选网格的粗细 + accept_dist 决定，
+##      二分只负责「首跳落点估计」，偏几毫米不影响最终选中的候选。
+@export var serve_solve_iters: int = 4
+@export var serve_search_dt: float = 1.0 / 30.0
+
+## 一点发球解算的**总计**时间预算（毫秒）。≤ 0 = 不限时（默认）。
+##
+## ★★ 改过职责：**帧时间不再靠它**。帧时间现在由 `serve_step_cands`
+##    的逐帧摊销保证（每帧最多试 6 个候选，实测每帧最坏 5.5 ms、0/180 帧超预算）。
+##    因此它只剩一个用途：**给整个搜索兜一个总时长上限**，
+##    防止某些极端参数（候选网格调得很大）让一个任务拖太久。
+##
+## ★ 为什么默认关掉：它是「砍掉没试完的候选」——省时间但**真的会掉落点精度**
+##   （实测 budget 12 ms 时第二跳离瞄准点的距离 0.22 → 0.62 m）。
+##   摊销已经把帧时间解决了，再开着它等于白掉精度。
+##
+## ★ 触发时 `serve_budget_holds` 会计数：这个数一直涨说明预算给得太紧，
+##   恒为 0 才是健康状态。回归 J 组盯着它。
+@export var serve_solve_budget_ms: float = -1.0
+
+## 每帧最多试几个候选（见 `_serve_job`）。0 = 不限（退回「一次跑完」）。
+##
+## ★★ 它是「发球时一卡一卡」的**真正**解法：把一次全量搜索（原生 10~30 ms，
+##    Godot 编辑器里还要再慢几倍）摊到十来帧里去跑，每帧只花 ~1 ms。
+## ★ 与 `serve_solve_budget_ms` 的区别很重要：预算是「砍掉没试的候选」
+##   （省时间但牺牲落点精度），摊销是「把同一批候选分几帧试」
+##   （省时间且**一点精度都不损**）。所以正常情况下应该是**摊销在工作、
+##   预算基本不触发**（`serve_budget_holds` 恒为 0 才是健康状态）。
+@export var serve_step_cands: int = 6
+
+## 预览把「蓄力」量化成几档（0 = 预览完全不算蓄力）。
+##
+## ★ 预览**必须**把蓄力算进去：否则出手那一刻飞行时间与预览解不一致，
+##   要么用旧解（蓄力白按，用户报过「发球无法蓄力」）要么当场重解（掉帧）。
+## ★ 为什么要量化：蓄力中 _charge_t 每帧都在涨，不量化的话任务每帧都
+##   因「输入变了」被重建，一次搜索永远跑不完（线一直停在提示候选那一份）。
+##   量化成 6 档 → 每档能安安静静跑十来帧，搜索来得及收敛。
+@export var serve_charge_preview_steps: int = 6
+
+## 轨迹提示线的重算间隔（秒）。原来是硬编码 0.1，现在可调。
+## ★ 间隔不必太小：玩家转视角时预览落点跟着走，0.12 s 的延迟肉眼看不出。
+@export var serve_preview_interval: float = 0.12
+## 复用上次解算结果的容差：出手点位移（米）/ 瞄准点位移（米）。
+## 超过就重算 —— 这两个值同时决定「预览准不准」和「出手会不会卡」，
+## 给大了预览会滞后、给小了缓存命中率掉下来。
+@export var serve_preview_from_eps: float = 0.02
+@export var serve_preview_aim_eps: float = 0.02
 
 ## 发球区：玩家必须站在台后这一带才能发球 —— 修「距离台面很远也可以发球」。
 ##   z < serve_zone_min：站在台内/贴网（不合规，也不能发）
@@ -681,34 +797,21 @@ enum HitKind { NORMAL, LOOP, FLICK }   # 普通 / 正手爆冲 / 反手暴拧
 @export var opponent_contact_lead: float = 0.35
 
 ## 各难度下对手「完全没接到」的概率（球从他身边飞过，玩家得分）。
+## 数值在 `DIFFICULTY_TABLE["opponent_miss"]`。
 ## 大师档 0.018 —— 大约 55 个球才白送一分，基本等于「对手不失误」。
-@export var opponent_miss_easy: float = 0.34
-@export var opponent_miss_normal: float = 0.16
-@export var opponent_miss_hard: float = 0.09
-@export var opponent_miss_expert: float = 0.045
-@export var opponent_miss_master: float = 0.018
+##
 ## 各难度下对手「接到但回球出台」的概率（球飞回来但落到台外，玩家得分）。
 ## 和「没接到」分开是为了让画面有变化 —— 全是球从对面飞过去会很单调。
-@export var opponent_out_easy: float = 0.12
-@export var opponent_out_normal: float = 0.06
-@export var opponent_out_hard: float = 0.035
-@export var opponent_out_expert: float = 0.018
-@export var opponent_out_master: float = 0.007
+## 数值在 `DIFFICULTY_TABLE["opponent_out"]`。
+##
 ## 各难度下对手回球飞行时间的倍率（越小 = 回球越快，玩家反应时间越少）。
 ## 0.58 s 的基数下：简单档 0.68 s（慢悠悠），大师档 0.41 s（贴着抽）。
-@export var opponent_return_flight_easy: float = 1.18
-@export var opponent_return_flight_normal: float = 1.00
-@export var opponent_return_flight_hard: float = 0.90
-@export var opponent_return_flight_expert: float = 0.80
-@export var opponent_return_flight_master: float = 0.70
+## 数值在 `DIFFICULTY_TABLE["opponent_return_flight"]`。
+##
 ## 各难度下对手回球的横向散布（占半台比例）。越高越贴边线，
 ## 玩家每球都得真的跑动，不能站中间守株待兔。
-@export var opponent_return_spread_easy: float = 0.45
-@export var opponent_return_spread_normal: float = 0.66
-@export var opponent_return_spread_hard: float = 0.80
-@export var opponent_return_spread_expert: float = 0.90
-@export var opponent_return_spread_master: float = 0.97
-## 落点横向超过这个值就必失 —— 对手会迈步，但迈不了那么远。
+## 数值在 `DIFFICULTY_TABLE["opponent_return_spread"]`。
+## 落点横向超过 opponent_reach_x 就必失 —— 对手会迈步，但迈不了那么远。
 ## 要和 opponent_player.step_limit_x(0.60) + stand_x(0.06) 对得上。
 @export var opponent_reach_x: float = 0.66
 
@@ -754,6 +857,29 @@ enum HitKind { NORMAL, LOOP, FLICK }   # 普通 / 正手爆冲 / 反手暴拧
 ## 扣杀落点横向散布（占半台比例），比普通回球更靠边。
 @export var opp_smash_spread: float = 0.95
 
+## ── 旋球对扣杀概率的折扣（2026-10-06，用户要的「旋球可以减少对方的扣球概率」）──
+##
+## ★ 为什么还要**显式**加一层：旋球本来就会**间接**压低扣杀概率 ——
+##   上旋吃马格努斯下沉 → 球在对手拍面平面处更低 → `opp_smash_chance_at` 算出来更低。
+##   但实测（tests/_spin_probe.gd 表 A/B）这条间接效应**存在、很弱、而且不单调**：
+##     中深落点：上旋 y=0.922 → 32.2%，无旋 0.931 → 34.1%，下旋 0.941 → 36.3%
+##               （上旋只比下旋低 11%，绝对差 4 个百分点）
+##     短球：    上旋 27.6% / 无旋 15.4% / 下旋 24.2%   ← **非单调**，无旋反而最低
+##   弱到玩家感知不到、也没法拿它做战术，所以再加一层**直接**的折扣把它做实。
+##
+## ★ 这一层是**独立乘子**，和「触球高度」那条路相乘，两条互不干扰。
+## ★ **绝不能揉进 `_opp_rage()`** —— 探针 F 组锁死了
+##   「HUD 亮 ⇔ `_opp_rage() > 1`」这条不变量；混进去凶度反馈就会说谎。
+## ★ 折扣按**触球那一刻球的旋量**算（`PingPongBall.get_spin()`）。
+##   注意旋量在**每次台面弹跳**后乘 spin_decay(0.55)，而球到对手拍面前必弹一次，
+##   所以实际吃到的是「出手旋量 × 0.55」—— `spin_full` 是照这个标定的，别按出手值设。
+## 满旋时扣杀概率的倍率。0.40 ≈ 概率砍掉六成。
+@export var spin_smash_discount: float = 0.40
+## 吃满折扣所需的 |旋量|（触球时刻的值，见上）。
+## 实测触球旋量：按 Z/C 的上/下旋 ≈ 0.88~0.94，无旋 ≈ 0.17~0.61，
+## 爆冲自带上旋 ≈ 0.66~1.10 → 1.0 能把「真正带了旋的球」和「随手挡回去的球」分开。
+@export var spin_smash_full: float = 1.0
+
 # ───────────── 连拍爽感循环（方案 C）─────────────
 ##
 ## 设计目标：**不新增任何界面**，把「这一局」本身做到让人想再打一次。
@@ -796,6 +922,42 @@ enum HitKind { NORMAL, LOOP, FLICK }   # 普通 / 正手爆冲 / 反手暴拧
 ##   不是为了挡住球。tier 越低越淡（见 _check_rally_milestone）。
 @export var rally_flash_time: float = 0.38
 @export var rally_flash_alpha: float = 0.22
+
+## ── 快球反馈：巨大球速数字（2026-10-06）──
+## 用户要的「接到或者打出速度较快的扣球时，屏幕上出现明显的反馈」。
+##
+## ★ 触发用的是**实测球速**（`PingPongBall.velocity.length()`，出手那一帧），
+##   **不是** `opp_smash_speed_max(32)` / `return_speed_max(24)` 那种**上限**参数。
+##   实测（tests/_spin_probe.gd 表 C）：本工程真实的出手球速只有 **5~11 m/s**，
+##   那两个上限从来没被触发过 —— 拿它们当显示值会凭空大出三四倍。
+## ★ 单位沿用工程里已有的口径：`_msg()` 里发球 / 击球显示的也是 m/s。
+##
+## ── 触发阈值（m/s）：**接球与打出用同一个门槛**（用户 2026-10-06 二次定稿）──
+## ★ 从 6.0 降到 5.0，并且**接球那条路也开始卡阈值**了。原来是「接住扣杀不卡阈值、
+##   自己打出才卡」，用户看了实测表之后要的是「球速大于 5 的接球与打出都有反馈」。
+## ★ 5.0 这个数在实测表上正好卡在一条干净的界线上：
+##     对手**普通**回球 4.99 → 不报（差 0.01 就是分界）
+##     我方普通回球 5.66 / 暴拧·轻 5.42 / 爆冲·轻 5.52 → 报
+##     对手**扣杀** 5.66~11.17（按难度）→ 报
+## ★★ 副作用要知道：本工程**普通回球就有 5.66 m/s**，所以门槛降到 5.0 之后，
+##    玩家的**几乎每一拍**都会弹数字。想要「只有重拍才弹」就把这个数调回 6.0
+##    （那正好把「随手回一板」和「蓄满爆冲」分开）。
+@export var speed_flash_min: float = 5.0
+## 数字停留秒数。
+@export var speed_flash_time: float = 1.15
+## 跳出瞬间的放大比例与回弹速度（同 rally_pop_* 的手感）。
+@export var speed_flash_pop: float = 0.85
+@export var speed_flash_pop_decay: float = 4.2
+## 大字字号。
+@export var speed_flash_size: int = 104
+## 数字落在屏幕高度的百分之几处（0 = 顶端，1 = 底端）。
+## ★ 取 0.60 而不是 0.5：正中是球和球台，大字压在那里会挡住这一拍本身。
+@export var speed_flash_anchor_y: float = 0.60
+## 「特别快」的额外门槛（m/s）：数字变橙红 + 呐喊升一档。
+## 7.8 校准：刚好在「蓄满的爆冲（实测 7.83）」与「大师档扣杀（实测 8.47）」上，
+## 而普通档扣杀（6.2）只在低一档 —— 「蓄满」因此有一个看得见的回报。
+@export var speed_flash_loud: float = 7.8
+
 ## 玩家每连赢 1 分，对手的扣杀概率乘上 (1 + step × (连胜 - 1))，封顶 max。
 ## step 0.28 / max 1.80 => 2 连胜 1.28 倍、3 连胜 1.56 倍、4 连胜吃满 1.80 倍。
 ## ★ 只乘在**扣杀概率**上，不动反应速度和回球质量 —— 那两样一改，
@@ -803,8 +965,28 @@ enum HitKind { NORMAL, LOOP, FLICK }   # 普通 / 正手爆冲 / 反手暴拧
 @export var streak_rage_step: float = 0.28
 @export var streak_rage_max: float = 1.80
 
+## ── 凶度的可见反馈（2026-10-04 阶段 2）──
+## ★ 为什么需要这一层：凶度**早就存在**（见 _opp_rage()），但它只乘在扣杀概率上，
+##   玩家能看到的只是「对手突然一板把我打死」，看不到「他为什么突然这么凶」。
+##   于是连胜反而变成一种**没有解释的惩罚** —— 玩家会以为是自己运气差。
+##   这一层不碰任何数值，只把**已经存在的状态**显示出来。
+## ★ 最高不透明度（连击吃满 streak_rage_max 时）。刻意压得低：屏幕四边泛红是
+##   余光里的信息，不该抢球路的注意力，更不能像受击红屏那样吓人。
+@export var rage_edge_max_alpha: float = 0.30
+## 红边宽度（像素）。太窄看不出是「边框」，太宽会吃掉可视面积。
+@export var rage_edge_thickness: float = 26.0
+## 呼吸频率（Hz）—— 让红边「活」着，而不是一块静态色块。
+@export var rage_pulse_hz: float = 1.5
+## 红边淡入淡出的速度（每秒变化多少 0~1 的可见度）。
+## ★ 不能瞬变：这一分结束时对手凶度立刻归 1（_win_streak 清零），
+##   硬切会让红边「啪」地消失，看着像画面故障。
+@export var rage_fade_speed: float = 2.4
+
 ## 连续得多少分开始提示「对手压上来了」。1 分不算连击，从第 2 分起才有话说。
 const STREAK_NOTE_AT := 2
+
+## 凶度配色：屏幕红边 + 比分栏那行字共用，保证两处永远同色。
+const RAGE_COLOR := Color(1.00, 0.20, 0.16)
 
 # ───────────── 流程 ─────────────
 @export_group("流程")
@@ -903,6 +1085,18 @@ var _opp_smash: bool = false
 ## 留成成员变量是为了能被探针读到：不落盘的话「球越高越容易扣」这条
 ## 只能靠肉眼在游戏里猜，没法验证。
 var _opp_contact_y: float = 0.0
+## 上一次对手触球时**球的旋量** —— 旋转折扣就是按它算的（见 spin_smash_discount）。
+## 同样留成成员变量给探针读：「旋得越足越难被扣杀」这条必须能被量出来。
+var _opp_contact_spin: float = 0.0
+## 对手上一次回球的**出手球速**（m/s）—— 扣杀和普通回球都记。
+##
+## ★ 为什么要存出手值而不是等玩家接球时再读：球在阻力下衰减得极快
+##   （drag_k=0.14，v=20 时加速度 56 m/s²），0.3 s 的飞行能把速度砍掉三四成，
+##   触球时的速度已经不是「对手这一拍有多快」了。存出手值才是球速枪的口径。
+## ★ 2026-10-06 从「只记扣杀」改成**每一拍都记**：用户要的是「球速大于 5 的
+##   接球也要有反馈」，判据因此从「是不是扣杀」变成「出手球速够不够快」。
+##   只记扣杀的话，对手一板很快的普通回球（比如高难度档）就永远报不出来。
+var _opp_shot_speed: float = 0.0
 ## 累计对手扣杀次数（结算面板 / 探针用）
 var _opp_smashes: int = 0
 
@@ -1079,6 +1273,34 @@ var _rally_flash: ColorRect
 var _rally_flash_t: float = 0.0
 var _rally_flash_peak: float = 0.0
 
+# ── 快球反馈 HUD（屏幕中下方的巨大球速数字）──
+## 见 _build_speed_hud() / _update_speed_hud()。
+var _speed_hud_root: VBoxContainer
+var _speed_label: Label          # 大字：球速数值
+var _speed_tag: Label            # 小字：这是怎么来的（接住扣杀 / 爆冲 / 暴拧）
+## 要显示多少 m/s，以及还能显示多久（<= 0 = 不显示）。
+var _speed_value: float = 0.0
+var _speed_t: float = 0.0
+var _speed_tag_text: String = ""
+## 跳出时的弹跳强度（1 → 0，见 speed_flash_pop_decay）。
+var _speed_pop: float = 0.0
+## 累计弹了几次 + 最近一次的球速（探针用：「够快的球才会弹」必须能被量出来）。
+var _speed_flashes: int = 0
+var _speed_last: float = 0.0
+
+# ── 凶度 HUD（对手变凶的可见反馈）──
+## 屏幕四条边的红色边框（上/下/左/右各一个 ColorRect）。
+var _rage_edges: Array[ColorRect] = []
+## 比分面板里那行「对手进入状态」的提示字。
+var _rage_label: Label
+## 当前红边的可见度（0~1，向目标值平滑逼近，见 rage_fade_speed）。
+var _rage_vis: float = 0.0
+## 呼吸相位（秒，一直累加；乘 speed 得最终透明度）。
+var _rage_phase: float = 0.0
+## 上一帧显示的凶度档位。只在**变化**时写 Label / 触发闪动 ——
+## add_theme_*_override 每次都会触发主题重算，而 _update_hud 是每帧调的。
+var _rage_shown: int = -1
+
 # ── 合规发球（先弹己方半台）+ 发球轨迹提示 ──
 ## 这一发的落点计划：{server_side, own_x_cands, opp_x, opp_z, flight, spin}。
 ## 整发期间固定 —— 轨迹提示线和实际发出的一模一样。
@@ -1087,6 +1309,61 @@ var _serve_traj: MeshInstance3D
 var _serve_traj_mesh: ImmediateMesh
 var _serve_traj_rings: Array = []
 var _serve_preview_t: float = 0.0
+## 上一次**真正画出去**的那条预览用的是哪个出手点 / 哪个瞄准点。
+##
+## ★ 存在的理由（2026-10-06 修）：预览环受 serve_preview_interval 节流，
+##   而出手那一刻会**重新读一次**瞄准点。玩家一边转视角一边按左键时，
+##   框还停在 0.12 s 前的落点上、球却飞向新落点 —— 看起来就是「对不上」。
+##   所以瞄准点/出手点一动就立刻补一次重画（站着不动时一次都不多画）。
+## 初值用 INF = 「还没画过」，第一次不许触发强制重画（否则节流断言会飘）。
+var _serve_draw_aim: Vector2 = Vector2(INF, INF)
+var _serve_draw_from: Vector3 = Vector3(INF, INF, INF)
+
+## 上一次发球解算的输入快照 + 结果。
+## ★ 存在的理由：`_solve_legal_serve` 一次要跑 180 个候选、原生就 150 ms，
+##   而它在「预览（10 Hz）」和「真正出手」两条路径上被反复调用 ——
+##   不缓存的话每秒要烧掉 1.5 s 的 CPU，玩家看到的就是「发球时一卡一卡」。
+## 键 = 出手点 + 瞄准点 + 自旋 + 飞行时间：这四项没变，解必然相同。
+var _serve_sol_res: Dictionary = {}
+## 真正跑过多少次全量搜索（缓存命中不计）。诊断 + 回归断言用：
+## 「玩家站着瞄准一秒，最多只该解算一次」这条不变量就靠它。
+var serve_solve_calls: int = 0
+## 轨迹预览真正重算（通过了节流门）的次数。回归断言用：
+## 它必须受 serve_preview_interval 约束，**不能**退化成每帧一次。
+var serve_preview_refreshes: int = 0
+## 「预算用尽、一个合法解都没找到 → 沿用旧解」发生了多少次。
+## ★ 它是个**自检指标**：这个数一直涨说明预算给得太紧（玩家会看到不跟手的线），
+##   恒为 0 说明预算形同虚设。回归 J 组盯着它。
+var serve_budget_holds: int = 0
+## 发球解算累计真实耗时（微秒）。诊断用：除以 serve_solve_calls 就是**平均一次解算
+## 在真机（含 Web/wasm）上花多久** —— 这是唯一能校准「预算该给多大」的数据，
+## 因为无头原生计时和 wasm 差好几倍。
+var serve_solve_us_total: int = 0
+var serve_solve_us_worst: int = 0
+## 上一次解算真正试了几个候选（0~serve_legal_attempts）。
+## ★ 存在的理由：想断言「时间预算真的把搜索截断了」不能量**墙钟毫秒**
+##   （机器一忙就抖）；量候选个数才是确定性的。回归 J4 就靠它。
+var serve_last_attempts: int = 0
+## 上一次被采纳（或最优）的那个候选 `[own_x, own_z, flight_scale]`。
+##
+## ★★ 它把「转视角时每 0.12 s 一次 20~60 ms 的全量搜索」变成「先试一个，通常立刻命中」：
+##   候选网格是固定的 180 个（5 个己方首跳 x × 6 个首跳 z × 6 个飞行时间倍率），
+##   而**网格本身不看瞄准点** —— 瞄准点只是用来给候选打分（第二跳离它多远）。
+##   所以瞄准点小幅移动时，上一次那个候选大概率仍然合法、且仍在
+##   `serve_legal_accept_dist` 之内 → 第一次尝试就直接 return，
+##   成本从 20 ms 掉到 ~0.2 ms（一个候选）。
+##   ★ 这与「直接复用上一次的**速度**」完全不同（那个试过、撤了）：
+##     复用速度 = 球还落在**旧**瞄准点上（落点滞后、不跟手）；
+##     复用**候选序号** = 用新瞄准点重新解速度，落点仍然对准新目标。
+##   ★ 反过来说，它只该是**排序提示**，不能当成硬性约束：
+##     提示候选不合法/不够近时，必须照常往下扫全网格。
+##   ★ 它不随 _invalidate_serve_solution() 清空 —— 那是「缓存解」的事，
+##     这里只是一个出发位置，换一发球依然是好起点。
+var _serve_solve_hint: Array = []
+var _serve_sol_from: Vector3 = Vector3.ZERO
+var _serve_sol_aim: Vector2 = Vector2.ZERO
+var _serve_sol_spin: float = 0.0
+var _serve_sol_flight: float = 0.0
 
 var _hud: CanvasLayer
 var _label: Label
@@ -1210,7 +1487,7 @@ func apply_preferences() -> void:
 		_tour_opp = {}
 		_difficulty_locked = false
 		_ranked = false
-		set_difficulty_t(float(clampi(int(g.get("difficulty")), 0, 4)))
+		set_difficulty_t(_saved_difficulty_t(g))
 		return
 
 	# ── 排位赛（方案 B）──
@@ -1241,7 +1518,7 @@ func apply_preferences() -> void:
 		_diff_t = float(difficulty)
 		return
 	_difficulty_locked = false
-	set_difficulty_t(float(clampi(int(g.get("difficulty")), 0, 4)))
+	set_difficulty_t(_saved_difficulty_t(g))
 
 
 func _resolve_refs() -> void:
@@ -1512,39 +1789,53 @@ func _tier5(a: float, b: float, c: float, d: float, e: float) -> float:
 	return lerpf(lo, hi, f)
 
 
+## 难度参数的**唯一取数口**：按参数名从 DIFFICULTY_TABLE 里取当前 `_diff_t` 档的值。
+##
+## ★ 为什么要有这个函数、而不是各处直接 `_tier5(表里的 5 个数)`：
+##   键名写错（`"fligth_time"`）时 `get()` 返回 null，直接下标会崩在**很远的地方**；
+##   而在这里 `push_error` 能一眼指出是哪个键。GDScript 没有编译期字典键检查，
+##   这个函数就是那道人工防线。
+## ★ 表里必须是 5 个元素：多一个少一个都说明加档时漏改了某行，
+##   而 `_tier5` 只取前 5 个，多写的那档会被**静默忽略**。
+func tune(key: String) -> float:
+	var v: Variant = DIFFICULTY_TABLE.get(key)
+	if v == null:
+		push_error("DIFFICULTY_TABLE 里没有参数 '%s'" % key)
+		return 0.0
+	var arr: Array = v
+	if arr.size() != 5:
+		push_error("DIFFICULTY_TABLE['%s'] 应为 5 档，实际 %d 档" % [key, arr.size()])
+		return 0.0
+	return _tier5(arr[0], arr[1], arr[2], arr[3], arr[4])
+
+
 func _flight_time() -> float:
-	return _tier5(easy_flight_time, normal_flight_time, hard_flight_time,
-		expert_flight_time, master_flight_time)
+	return tune("flight_time")
 
 
 func _spread() -> float:
-	return _tier5(easy_spread, normal_spread, hard_spread,
-		expert_spread, master_spread)
+	return tune("spread")
 
 
 ## 够球范围的难度倍率。乘在 hit_reach_x / z / y 三个半轴上。
 func _reach_scale() -> float:
-	return _tier5(easy_reach_scale, normal_reach_scale, hard_reach_scale,
-		expert_reach_scale, master_reach_scale)
+	return tune("reach_scale")
 
 
 ## 对手发球的侧旋强度。落在 [-s, +s] 之间，符号随机 ——
 ## 左右都会拐，玩家不能靠「站偏一边」预习。
 func _serve_spin() -> float:
-	return _tier5(easy_serve_spin, normal_serve_spin, hard_serve_spin,
-		expert_serve_spin, master_serve_spin)
+	return tune("serve_spin")
 
 
 ## 发球落点向边线偏的程度（0 = 半台内均匀，1 = 几乎全贴边线）。
 func _serve_edge() -> float:
-	return _tier5(easy_serve_edge, normal_serve_edge, hard_serve_edge,
-		expert_serve_edge, master_serve_edge)
+	return tune("serve_edge")
 
 
 ## 发短球的概率。短球落点贴网，第二跳还在台内且很低，抽不了。
 func _serve_short_chance() -> float:
-	return _tier5(easy_serve_short, normal_serve_short, hard_serve_short,
-		expert_serve_short, master_serve_short)
+	return tune("serve_short")
 
 
 ## 体力对「够球范围」的折扣 —— 用户要的「体力与击球成功概率正相关」。
@@ -1575,6 +1866,23 @@ func set_difficulty(d: int) -> void:
 	set_difficulty_t(float(clampi(d, 0, 4)))
 
 
+## 从单例读「玩家设的难度」。
+##
+## 优先 difficulty_t（浮点，2026-10-04 起面板可以微调）；
+## 没有这个键的老存档退回整数 difficulty。
+## ★ 为什么不在调用点直接写 `float(g.get("difficulty"))`：
+##   这个读法散在apply_preferences() 的两条分支里，漏一条就变成
+##   「双打入口忽略了微调、正常入口忽略了」这种半生不熟的状态。
+##   收成一个函数，以后加第三处分支也不会漏。
+## ★ 参数类型是 Object 而不是 Node：探针要能用只有这几个字段的假单例
+##   验读法（真Game 在树上、set() 会写真实存档）。
+func _saved_difficulty_t(g: Object) -> float:
+	var ft: Variant = g.get("difficulty_t")
+	if ft != null:
+		return clampf(float(ft), 0.0, 4.0)
+	return float(clampi(int(g.get("difficulty")), 0, 4))
+
+
 ## 设定**连续难度**。整数档传进来等价于原来的行为（小数部分为 0）。
 ## 排位用 _diff_t 的中间值让 AI 强度跟着段位平滑爬。
 func set_difficulty_t(t: float) -> void:
@@ -1586,9 +1894,15 @@ func set_difficulty_t(t: float) -> void:
 	# 应当还是刚玩的那一档，不然下次进局难度会莫名变回去。
 	# 赛事场次 / 排位赛除外 —— 那两种的难度是跟着对手走的，写回去会把玩家
 	# 在菜单里设的全局难度悄悄改掉。
+	# ★★ 必须回写**浮点**（set_difficulty_t）而不是整数（set_difficulty）：
+	#   写整数会把面板上的微调 round 掉（设了 1.35 → 存成 1.0），
+	#   而且 apply_preferences() 进场时走的也是这个函数 = 每次进场抹一次。
 	var g := get_node_or_null("/root/Game")
 	if g != null and not _difficulty_locked and not _ranked:
-		g.call("set_difficulty", difficulty)
+		if g.has_method("set_difficulty_t"):
+			g.call("set_difficulty_t", _diff_t)
+		else:
+			g.call("set_difficulty", difficulty)
 	if _ranked:
 		# 排位里 Tab 也允许调（当作「手热/手冷」的临时微调），但不写回档案 ——
 		# 段位算出来的强度才是这个模式的「正版难度」。
@@ -1717,6 +2031,12 @@ func start_serve() -> void:
 		# 这一发的落点计划现在定下来（轨迹提示线跟着它走）
 		_serve_plan = _plan_serve(1)
 		_serve_preview_t = 0.0
+		# 新的一发：预览还没画过。不清的话上一发的瞄准点会立刻触发一次
+		# 「瞄准点动了 → 强制重画」，白多画一次。
+		_serve_draw_aim = Vector2(INF, INF)
+		_serve_draw_from = Vector3(INF, INF, INF)
+		# 新的一发：丢掉上一发的解算缓存（参数可能已经不同了）
+		_invalidate_serve_solution()
 		if _partner_serving():
 			# ★ 球权在队友手里：不摆到玩家手上，改成「持球等他出手」。
 			#   原来这里一律走玩家分支，于是每次轮到队友发球都变成
@@ -1816,7 +2136,16 @@ func _hold_ball_for_serve() -> void:
 ## 蹲下：相机 0.97 − 0.41 = 0.56 → 被 serve_hold_min_y(0.88) 兜住
 ##   （ITTF 2.6.1：球必须在比赛台面以上）。
 func _serve_launch_y() -> float:
-	var cam := get_viewport().get_camera_3d()
+	# ★★ 两层都要判：不在场景树里时 `get_viewport()` 返回的是 **null 本身**
+	#    （不是「有 viewport 但没相机」）→ `null.get_camera_3d()` 直接抛
+	#    `Cannot call method 'get_camera_3d' on a null value`。
+	#    离屏探针（回归 J 组、性能探针）用的就是不入树的脚本实例，
+	#    走到这里会**每次调用刷一条带完整回溯的错误** —— 之前被 grep 掩掉了，
+	#    实际一直在污染 stderr，而且量出来的耗时里混着日志 I/O。
+	var vp := get_viewport()
+	if vp == null:
+		return toss_strike_height
+	var cam := vp.get_camera_3d()
 	if cam == null:
 		return toss_strike_height
 	return maxf(cam.global_position.y - serve_hold_below_eye, serve_hold_min_y)
@@ -1829,6 +2158,27 @@ func _serve_launch_y() -> float:
 ## （_update_serve_traj）都用它，否则提示线画的是一条不会发生的弹道。
 func _serve_strike_y() -> float:
 	return clampf(_serve_launch_y(), table_height + 0.12, toss_strike_height)
+
+
+## 这一发的**出手点** —— 全流程唯一的定义点。
+##
+## ★★ 为什么必须唯一：轨迹提示线（`_update_serve_traj`）、抛球落回后的击出
+##   （`_serve_strike`）、以及「没抛球、被兜底代发」的路径（`_player_serve`）
+##   都要在这里取点。任何一处用了别的值，玩家看到的黄色预览框就和球真正
+##   落下的地方对不上 —— 而且不是「差一点点」：解算器解出的速度是**按这个点**
+##   算的，换一个出发点发射，整条弹道就整体平移那么多，落点跟着平移。
+##   （2026-10-06 用户报的正是这个：加了抛球之后，球从**手里**那个点出手，
+##     预览却还按计划里那个随机 from_x 画，横向最多差 1 m。）
+##
+## 抛球途中用 `_toss_x/_toss_z`：玩家这时可能挪步，而球其实一直待在
+## **抛球那一列**上 —— 用捕获值才和眼睛看到的球一致。
+## 高度统一给 `_serve_strike_y()`（抛球期间给 `_toss_strike_y`，
+## 它是抛球那一刻捕获的同一个值，中途蹲下也不会让线跑掉）。
+func _serve_launch_point() -> Vector3:
+	if _tossing:
+		return Vector3(_toss_x, _toss_strike_y, _toss_z)
+	var hp := _serve_hold_point()
+	return Vector3(hp.x, _serve_strike_y(), hp.z)
 
 
 ## 发球时球「拿在手里」的位置。
@@ -1856,6 +2206,10 @@ func _serve_hold_point() -> Vector3:
 		if _doubles:
 			px = _my_x(_server_idx)
 		base = Vector3(px, 1.05, pz)
+	# ★ 未入树（离屏探针）时 get_viewport() 返回 null 且会 push_error ——
+	#   直接给静态偏移，这样发球预览的开销也能在探针里离线量。
+	if not is_inside_tree():
+		return base + Vector3(-0.24, 0.0, 0.0)
 	var cam := get_viewport().get_camera_3d()
 	if cam == null:
 		return base + Vector3(-0.24, 0.0, 0.0)
@@ -1960,9 +2314,16 @@ func _serve_strike() -> void:
 	if _toss_vy > 0.0:
 		_msg("球还在上升 —— 等它落到腰高再打")
 		return
+	# ★ 高度也要卡（见 toss_strike_tol）：球从最高点落回出手高度要 0.4 s 左右，
+	#   中途点左键的话球还在半空。出手点统一成 _serve_launch_point() 之后，
+	#   从半空击出会变成「球当着玩家的面往下瞬移」；
+	#   而且从半空出发的弹道本来就与预览线不是同一条（落点对不上）。
+	if _toss_y > _toss_strike_y + toss_strike_tol:
+		_msg("等球落到腰高再击出")
+		return
+	# ★ 先把出手点取好 —— `_serve_launch_point()` 靠 `_tossing` 判断该用哪一列。
+	var from := _serve_launch_point()
 	_tossing = false
-	# 球在哪个高度就从这个高度出手
-	var from := Vector3(_toss_x, maxf(_toss_y, table_height + 0.12), _toss_z)
 	swing()
 	_player_serve(from)
 
@@ -2040,6 +2401,19 @@ func _plan_serve(server_side: int, use_edge: bool = false) -> Dictionary:
 	var flight := _flight_time()
 	if server_side < 0:
 		flight *= serve_flight_scale
+	# ★★ 出手点**不再在这里随机**（2026-10-06 修）。
+	#
+	#   原来的做法是「计划建立时掷一个 from_x ∈ ±0.30」，让预览和出手共用它。
+	#   但后来加了**抛球**：球是从「手里」那个点抛起、原地落回来击出的，
+	#   也就是实际出手点是 `_serve_hold_point()`（刻意放在镜头轴左边 24 cm，
+	#   免得被第一人称球拍挡住），和 from_x 最多能差 1 m 以上。
+	#   而那个速度是**按 from_x 解出来的** —— 球于是带着「从 A 点出发」的速度、
+	#   从 B 点飞出去；同一条弹道平移多远，落点就偏多远。
+	#   用户 2026-10-06 报的「发球落点与黄色预览框不一样」就是这个。
+	#
+	#   ★ 现在出手点只有**一个定义点**：`_serve_launch_point()`。
+	#     它是玩家站位的确定性函数（会随走位 / 转头一起动），所以预览、抛球、
+	#     出手三处永远落在同一条弹道上，不需要也不应该再存进计划里。
 	return {
 		"server_side": server_side,
 		"own_x_cands": own_cands,
@@ -2060,6 +2434,8 @@ func _plan_serve(server_side: int, use_edge: bool = false) -> Dictionary:
 ##   线性映射下，同一个俯仰角在站得远 / 站得近时对应的落点会飘；
 ##   射线求交天然跟着站位走 —— 站在台后往哪看，落点就在哪，不会跑偏。
 func _serve_aim_point() -> Vector2:
+	if not is_inside_tree():
+		return Vector2(0.0, -table_half_length * 0.60)
 	var cam := get_viewport().get_camera_3d()
 	if cam == null:
 		return Vector2(0.0, -table_half_length * 0.60)
@@ -2102,64 +2478,342 @@ func _apply_serve_aim(plan: Dictionary) -> void:
 	plan["opp_z"] = ap.y
 
 
-## 求解「合规发球」的速度：第一跳己方半台 → 不撞网 → 第二跳对方半台。
+## ── 发球解算任务（把搜索摊到多帧）────────────────────────────
 ##
-## 枚举「己方第一跳的 x / z + 飞行时间」若干候选，逐个解速度并做全路径模拟，
-## 挑**第二跳最接近目标落点**的合法解。
-## 找不到合法解时返回 ok=false，调用方退回旧的「直落对方台」轨迹
-## —— 宁可这一发略不合规，也绝不能让球撞网 / 卡住球局。
-func _solve_legal_serve(from: Vector3, plan: Dictionary) -> Dictionary:
-	var b := _ball as PingPongBall
-	if b == null:
-		return {"ok": false, "v": Vector3.ZERO}
+## ★★ 为什么不「一次调用搜完 180 个候选」：
+##   一次全量搜索原生 10~30 ms、在 Godot **编辑器**里跑还要再慢几倍，
+##   而它每 serve_preview_interval(0.12 s) 就被触发一次 —— 掉的就是那一帧。
+##   改成任务后每帧最多只试 serve_step_cands(6) 个候选（≈1 ms），
+##   把一次搜索摊到十来帧跑完。玩家的感受：
+##     「每 0.12 s 卡一下」→「什么都感觉不到，线自己慢慢收敛」。
+##   ★ 它**不减少**搜索量、**不降低**精度（候选表、判据、采纳阈值全没动），
+##     只是把同一份工作分到更多帧 —— 唯一能同时保住帧时间和精度的做法。
+##   ★ 与 `serve_solve_budget_ms` 的分工：预算是「砍工作量」（会牺牲精度），
+##     摊销是「摊工作量」（不牺牲）。预算只兜底，摊销才是主力。
+##   ★ 任务的**第一帧就会发布一次结果**（提示候选那一份），所以缓存里
+##     从进发球态起就一直有一份合法解 —— 出手因此永远不等搜索。
+var _serve_job: Dictionary = {}
+
+
+## 任务的「输入指纹」：出手点 / 瞄准点 / 自旋 / 飞行时间。
+## 四项任一变了，旧解就不再对应当前意图，任务必须重建。
+##
+## ★ 飞行时间取 `flight_eff`（= 基准 flight × 蓄力折算），见
+##   _apply_serve_charge_to_plan —— 预览与出手必须用**同一个**飞行时间，
+##   否则出手那一刻键必然失配、又要当场重解一次。
+func _serve_job_key(from: Vector3, plan: Dictionary) -> Dictionary:
+	return {
+		"from": from,
+		"aim": Vector2(float(plan.get("opp_x", 0.0)), float(plan.get("opp_z", 0.0))),
+		"spin": float(plan.get("spin", 0.0)),
+		"flight": float(plan.get("flight_eff", plan.get("flight", 0.0))),
+	}
+
+
+## 把「蓄力」折算成**预览用的**飞行时间写进计划（键名 flight_eff）。
+##
+## ★ 为什么不覆盖 plan["flight"]：那是**基准**飞行时间，出手路径
+##   （_player_serve）会再乘一次 serve_power_flight_scale —— 覆盖就会
+##   被折算两次，蓄力越深球越慢，方向正好反了。
+func _apply_serve_charge_to_plan(plan: Dictionary) -> void:
+	var base := float(plan.get("flight", 0.42))
+	if serve_charge_preview_steps <= 0:
+		plan["flight_eff"] = base
+		return
+	plan["flight_eff"] = base * lerpf(1.0, serve_power_flight_scale,
+		_quantized_charge_power())
+
+
+## 当前蓄力档位（量化成 serve_charge_preview_steps 档）。
+## 与 _player_serve 里算 power 的公式**必须一致**（连 charge_min_power 一起），
+## 否则预览解的飞行时间与出手那一刻的飞行时间对不上，键必然失配。
+func _quantized_charge_power() -> float:
+	# ★ 预览里关掉蓄力（steps <= 0）时，出手也必须一并忽略蓄力：
+	#   `_apply_serve_charge_to_plan` 那边给的是 flight_eff = base（完全不理蓄力），
+	#   这里要是还返回满档，两边又对不上了。
+	if serve_charge_preview_steps <= 0:
+		return 0.0
+	if not _charging or _charge_t <= 0.0:
+		return 0.0
+	var steps := maxi(serve_charge_preview_steps, 1)
+	var q := roundf(clampf(_charge_t, 0.0, 1.0) * float(steps)) / float(steps)
+	if q <= 0.0:
+		return 0.0
+	return clampf(charge_min_power + (1.0 - charge_min_power) * q, 0.0, 1.0)
+
+
+## 任务是不是还对应着当前输入（容差 = serve_preview_from_eps / _aim_eps）。
+func _serve_job_matches(job: Dictionary, from: Vector3, plan: Dictionary) -> bool:
+	var k := _serve_job_key(from, plan)
+	return (job["from"] as Vector3).distance_to(from) <= serve_preview_from_eps \
+		and (job["aim"] as Vector2).distance_to(k["aim"]) <= serve_preview_aim_eps \
+		and absf(float(job["spin"]) - float(k["spin"])) <= 0.02 \
+		and absf(float(job["flight"]) - float(k["flight"])) <= 0.005
+
+
+## 这次要试的候选表：**提示候选排第 0 位**，然后是固定网格
+## （己方首跳横向 × 己方首跳纵深 × 飞行时间倍率）。
+func _build_serve_cands(from: Vector3, plan: Dictionary) -> Array:
 	var server_side := int(plan.get("server_side", 1))
 	var own_x_cands: Array = plan.get("own_x_cands", [0.0])
-	var opp_x := float(plan.get("opp_x", 0.0))
-	var opp_z := float(plan.get("opp_z", -0.7))
-	var flight := float(plan.get("flight", 0.42))
-	var spin := float(plan.get("spin", 0.0))
-	var z_hi := minf(serve_own_bounce_max_z, maxf(serve_own_bounce_min_z + 0.05, absf(from.z) - 0.10))
+	var z_hi := minf(serve_own_bounce_max_z,
+		maxf(serve_own_bounce_min_z + 0.05, absf(from.z) - 0.10))
 	var n_z := 6
-	var want := Vector2(opp_x, opp_z)
-	var best := Vector3.ZERO
-	var best_d := 1e9
-	var best_second := Vector3.ZERO
-	var attempts := 0
+	var cands: Array = []
+	if _serve_solve_hint.size() == 3:
+		cands.append([float(_serve_solve_hint[0]),
+			float(_serve_solve_hint[1]), float(_serve_solve_hint[2])])
 	for own_x in own_x_cands:
 		for i in range(n_z):
 			var fz := lerpf(serve_own_bounce_min_z, z_hi, float(i) / float(maxi(n_z - 1, 1)))
 			var own_z := float(server_side) * fz
 			for fs in serve_legal_flight_scales:
-				if attempts >= serve_legal_attempts:
-					break
-				attempts += 1
-				var t := clampf(flight * float(fs), serve_flight_min, serve_flight_max)
-				var target := Vector3(float(own_x), table_height + 0.02, own_z)
-				var v := b.solve_velocity(from, target, t)
-				var sp := v.length()
-				if sp > serve_speed_max and sp > 0.001:
-					v = v * (serve_speed_max / sp)
-				var r: Dictionary = b.simulate_path(from, v, spin, 2.5,
-				serve_solve_dt, serve_net_clearance)
-				var ev: Array = r["events"]
-				if not b.is_legal_serve(ev, server_side):
-					continue
-				var bl: Array = r["bounces"]
-				var second: Vector3 = bl[1] if bl.size() > 1 else Vector3.ZERO
-				var d := Vector2(second.x - want.x, second.z - want.y).length()
-				if d < best_d:
-					best_d = d
-					best = v
-					best_second = second
-				if d <= serve_legal_accept_dist:
-					return {"ok": true, "v": v, "second": second}
-	if best == Vector3.ZERO or best_d >= 1e8:
-		return {"ok": false, "v": Vector3.ZERO}
-	# "second" = 实际第二跳（落到接发球方半台的那一点）。
-	# 调用方拿它来判「短球提示」—— 不能拿计划落点判：慢发球
-	# （serve_flight_scale）会让弧线变高、实际落点比目标浅，
-	# 用计划值会漏报一大半短球。见 _do_serve。
-	return {"ok": true, "v": best, "second": best_second}
+				cands.append([float(own_x), own_z, float(fs)])
+	return cands
+
+
+func _make_serve_job(from: Vector3, plan: Dictionary) -> Dictionary:
+	var k := _serve_job_key(from, plan)
+	k["cands"] = _build_serve_cands(from, plan)
+	k["i"] = 0
+	k["attempts"] = 0
+	k["best"] = {}
+	k["done"] = false
+	k["budget"] = false
+	# ★ 整个任务的**截止时刻**（绝对时间，≤ 0 = 不限）。默认不限：
+	#   帧时间已经由 serve_step_cands 摊销保证了，再加总时长上限只会掉精度。
+	k["deadline"] = -1
+	k["server_side"] = int(plan.get("server_side", 1))
+	return k
+
+
+## 推进任务：最多试 max_cands 个候选（≤ 0 = 不限个数）。
+## 返回 true = 这一轮已收工（采纳了解 / 候选试完 / 预算用尽）。
+##
+## 预算看的是 `job["deadline"]`（**绝对**时刻，`Time.get_ticks_usec()` 口径）。
+## ★★ 必须是绝对时刻、而且由**任务创建方**算好：写成「时长 + 函数内部现取起点」
+##    的话每次调用都会重新获得一份完整预算，「极紧预算」就永远至少放行一个候选
+##    —— 断言会变得看运气。
+func _advance_serve_job(job: Dictionary, max_cands: int) -> bool:
+	var b := _ball as PingPongBall
+	if b == null:
+		return true
+	var cands: Array = job["cands"]
+	var deadline := int(job.get("deadline", -1))
+	var n := 0
+	while int(job["i"]) < cands.size() and int(job["attempts"]) < serve_legal_attempts:
+		if max_cands > 0 and n >= max_cands:
+			return false
+		# ★ 预算检查放在**评估之前**：这一轮没算进 attempts，统计才不骗人。
+		if deadline > 0 and Time.get_ticks_usec() > deadline:
+			job["budget"] = true
+			return true
+		var c: Array = cands[int(job["i"])]
+		job["i"] = int(job["i"]) + 1
+		job["attempts"] = int(job["attempts"]) + 1
+		n += 1
+		var h: Dictionary = _try_serve_candidate(b, job["from"], float(c[0]),
+			float(c[1]), float(c[2]), float(job["flight"]),
+			float(job["spin"]), int(job["server_side"]), job["aim"])
+		if h.is_empty():
+			continue
+		var cur: Dictionary = job["best"]
+		if cur.is_empty() or float(h["d"]) < float(cur["d"]):
+			job["best"] = h
+		if float(h["d"]) <= serve_legal_accept_dist:
+			job["done"] = true
+			return true
+	if int(job["i"]) >= cands.size():
+		job["done"] = true
+		return true
+	return false
+
+
+## 把任务当前的结果发布成「预览解」= 写缓存 + 写提示候选。
+## ★ 任务第一帧就会发布一次（提示候选那一份，甚至可能是「已采纳」）——
+##   所以出手拿到的永远是一份**合法**解，而不是「还没搜到」。
+func _publish_serve_job(job: Dictionary) -> void:
+	var best: Dictionary = job["best"]
+	if best.is_empty():
+		return
+	serve_last_attempts = int(job["attempts"])
+	_serve_solve_hint = [best["own_x"], best["own_z"], best["fs"]]
+	_serve_sol_res = {"ok": true, "v": best["v"], "second": best["second"],
+					  "budget": bool(job["budget"])}
+	_serve_sol_from = job["from"]
+	_serve_sol_aim = job["aim"]
+	_serve_sol_spin = float(job["spin"])
+	_serve_sol_flight = float(job["flight"])
+
+
+## 已发布的解是否还对应当前输入（容差 = serve_preview_from_eps / _aim_eps）。
+func _serve_solution_matches(from: Vector3, plan: Dictionary) -> bool:
+	if _serve_sol_res.is_empty():
+		return false
+	var k := _serve_job_key(from, plan)
+	return _serve_sol_from.distance_to(from) <= serve_preview_from_eps \
+		and _serve_sol_aim.distance_to(k["aim"]) <= serve_preview_aim_eps \
+		and absf(_serve_sol_spin - float(k["spin"])) <= 0.02 \
+		and absf(_serve_sol_flight - float(k["flight"])) <= 0.005
+
+
+## 求解「合规发球」的速度（**同步一次跑完**）：第一跳己方半台 → 不撞网 → 第二跳对方半台。
+##
+## 枚举「己方第一跳的 x / z + 飞行时间」若干候选，逐个解速度并做全路径模拟，
+## 挑**第二跳最接近目标落点**的合法解。
+## 找不到合法解时返回 ok=false，调用方退回旧的「直落对方台」轨迹
+## —— 宁可这一发略不合规，也绝不能让球撞网 / 卡住球局。
+##
+## ★ 预览**不**走这里（它走 _advance_serve_job 逐帧摊销）；
+##   这里留给「必须当场拿到答案」的两种场合：出手的兜底、回归探针。
+func _solve_legal_serve(from: Vector3, plan: Dictionary,
+						budget_ms: float = -1.0) -> Dictionary:
+	serve_solve_calls += 1
+	# ★★ 截止时刻在**这次解算的起点**（连候选表构建的时间也算进去）——
+	#   必须在 `_make_serve_job` 之前取：构建 180 个候选本身要一两百微秒，
+	#   放在它之后取的话，「极紧预算」还会放行一个候选，断言就变成看运气。
+	var dl := (Time.get_ticks_usec() + int(budget_ms * 1000.0)) \
+		if budget_ms > 0.0 else -1
+	var job := _make_serve_job(from, plan)
+	# ★★ 提示候选**不受预算约束**，先单独跑掉：它只花 ~0.2 ms，却是
+	#   「转视角时一步命中」的全部来源 —— 被预算砍掉 = 预算开始伤精度。
+	#   （没有提示时预算从第 0 个候选就开始生效，行为与改之前一致。）
+	if _serve_solve_hint.size() == 3:
+		_advance_serve_job(job, 1)
+	job["deadline"] = dl
+	if not bool(job["done"]):
+		_advance_serve_job(job, 0)
+	serve_last_attempts = int(job["attempts"])
+	var best: Dictionary = job["best"]
+	if best.is_empty():
+		return {"ok": false, "v": Vector3.ZERO, "budget": bool(job["budget"])}
+	# 最优解也记成提示：下一次从它出发，通常一步就命中。
+	_serve_solve_hint = [best["own_x"], best["own_z"], best["fs"]]
+	return {"ok": true, "v": best["v"], "second": best["second"],
+			"budget": bool(job["budget"])}
+
+
+## 试一个候选：「己方首跳点 (own_x, own_z) + 飞行时间倍率 fs」，
+## 解出速度后跑**真实物理**（simulate_path / serve_solve_dt），
+## 返回第二跳落点离瞄准点的距离。非法或没弹到第二跳 → 返回空字典。
+##
+## ★ 抽成独立函数，是为了让「提示候选」「网格候选」「逐帧摊销」三处
+##   共用**同一段**判定：各写一遍早晚会改了一处忘了另一处（判据漂移）。
+func _try_serve_candidate(b: PingPongBall, from: Vector3,
+		own_x: float, own_z: float, fs: float, flight: float,
+		spin: float, server_side: int, want: Vector2) -> Dictionary:
+	var t := clampf(flight * fs, serve_flight_min, serve_flight_max)
+	var target := Vector3(own_x, table_height + 0.02, own_z)
+	# ★ 粗搜索（serve_solve_iters 次二分 / dt=serve_search_dt）：解出来的速度
+	#   随后必须过 simulate_path(serve_solve_dt) 的 is_legal_serve 校验，
+	#   所以放粗只会让「首跳落点估计」偏几毫米，不会放过非法发球。
+	var v := b.solve_velocity(from, target, t, serve_solve_iters, serve_search_dt)
+	var sp := v.length()
+	if sp > serve_speed_max and sp > 0.001:
+		v = v * (serve_speed_max / sp)
+	# ★ 末位实参 2 = 「收够两个事件就停」：is_legal_serve 只看
+	#   events[0] / events[1]，第二跳在那一步就已经发生了。
+	#   正常发球 max_time=2.5 s 要跑 150 步，而第二跳在第 ~66 步
+	#   就落地 —— 不早退的话剩下 80 多步纯属白算。
+	var r: Dictionary = b.simulate_path(from, v, spin, 2.5,
+	serve_solve_dt, serve_net_clearance, 2)
+	if not b.is_legal_serve(r["events"], server_side):
+		return {}
+	var bl: Array = r["bounces"]
+	if bl.size() < 2:
+		return {}
+	var second: Vector3 = bl[1]
+	return {
+		"d": Vector2(second.x - want.x, second.z - want.y).length(),
+		"v": v,
+		"second": second,
+		"own_x": own_x,
+		"own_z": own_z,
+		"fs": fs,
+	}
+
+
+## 带缓存的**同步**发球解算 —— 只给「必须当场拿到答案」的场合用。
+##
+## ★ 预览**不**走这里了（改走 `_advance_serve_job` 逐帧摊销，见 _serve_job）。
+##   仍留着的两个用处：
+##     1. 出手兜底：刚进发球态、预览还一次都没发布过就要出手时。
+##     2. 回归探针：它需要「一次调用 = 一次确定的全量搜索」这种可控语义。
+##
+## `budget_ms` 透传给解算器；出手兜底那条路径传默认值（不限时），
+## 保证球的落点精度不打折。
+##
+## 键 = 出手点 / 瞄准点 / 自旋 / 飞行时间；任一超出容差就重算。
+func _solve_serve_cached(from: Vector3, plan: Dictionary,
+						 budget_ms: float = -1.0) -> Dictionary:
+	var aim := Vector2(float(plan.get("opp_x", 0.0)), float(plan.get("opp_z", 0.0)))
+	var spin := float(plan.get("spin", 0.0))
+	var flight := float(plan.get("flight", 0.0))
+	# ① 输入一个都没变 → 直接返回上次的解
+	if not _serve_sol_res.is_empty() \
+		and _serve_sol_from.distance_to(from) <= serve_preview_from_eps \
+		and _serve_sol_aim.distance_to(aim) <= serve_preview_aim_eps \
+		and absf(_serve_sol_spin - spin) <= 0.02 \
+		and absf(_serve_sol_flight - flight) <= 0.005:
+		return _serve_sol_res
+	# ② 输入变了 → 老老实实全量搜索。
+	#    ★ 试过一条「先把上一次的解套到新瞄准点上、一次模拟验证」的快路：
+	#      实测命中率只有 50%、平均只省 4 ms（24.1 → 27.7），
+	#      却会让实际落点滞后于瞄准点（连续转视角时预览环不跟手）。
+	#      收益不抵复杂度，撤掉了 —— 转视角时 24 ms 的一次尖峰已经远好过原来的 149 ms。
+	var t_solve := Time.get_ticks_usec()
+	var res := _solve_legal_serve(from, plan, budget_ms)
+	var solve_us := Time.get_ticks_usec() - t_solve
+	serve_solve_us_total += solve_us
+	if solve_us > serve_solve_us_worst:
+		serve_solve_us_worst = solve_us
+	# ★★ 预算用尽 + 一个合法解都没找到 → **不动缓存**（键也不更新）并沿用旧解。
+	#    两个理由：
+	#      1. 线不能闪。玩家转视角扫过一片「解不出球」的区域时，直接返回
+	#         ok=false 会让提示线一帧有一帧无，比线稍旧更难受。
+	#      2. 不更新键 = 下一拍还会重搜同一片区域。这样「预算」是**每拍一份**，
+	#         而不是「这片区域永远搜不完」—— 停在原地不动时，多试几拍总能收敛。
+	if bool(res.get("budget", false)) and not bool(res["ok"]) \
+		and not _serve_sol_res.is_empty():
+		serve_budget_holds += 1
+		return _serve_sol_res
+	_serve_sol_from = from
+	_serve_sol_aim = aim
+	_serve_sol_spin = spin
+	_serve_sol_flight = flight
+	_serve_sol_res = res
+	return res
+
+
+## 出手用哪一份解。
+##
+## ★★ 默认直接用**预览已经发布**的那一份：出手那一刻不该再跑任何搜索。
+##   只要它是一份合法解就直接用 —— 包括「任务还没跑完时的最优候选」。
+## ★ 兜底（只有这两种情况会真跑搜索）：
+##     1. 预览一次都没发布过（刚进发球态就出手）；
+##     2. 已发布的那份不是合法解（ok=false）。
+##   兜底走同步全量搜索、**不限时**：宁可这一下卡一帧，
+##   也绝不能让球撞网或者发出不合规的球。
+func _serve_solution_for_release(from: Vector3, plan: Dictionary) -> Dictionary:
+	# ★★ 复用之前**必须核键**（出手点 / 瞄准点 / 自旋 / 飞行时间）。
+	#   原来这里只看「手上有没有一份合法解」，不看它是不是**这一发**的解 ——
+	#   出手点一旦变了，那份速度就是按另一个出发点解出来的，
+	#   球会带着错的初速飞出去（整条弹道平移那么多），落点自然对不上预览框。
+	#   这就是 2026-10-06 用户报的「发球落点与黄色预览框不一样」的第二半。
+	if not _serve_sol_res.is_empty() and bool(_serve_sol_res.get("ok", false)) \
+		and _serve_solution_matches(from, plan):
+		return _serve_sol_res
+	_serve_job = {}
+	return _solve_serve_cached(from, plan)
+
+
+## 丢掉发球解算缓存 —— 换一发 / 改了发球参数时调，避免复用旧参数下的解。
+## ★ 连**任务**一起丢掉：一个还在跑的旧任务会把旧参数下的解发布回来。
+## ★ 但**不清提示候选**：那只是「从哪个候选开始试」的出发位置，
+##   换一发球它依然是很好的起点（见 _serve_solve_hint）。
+func _invalidate_serve_solution() -> void:
+	_serve_sol_res = {}
+	_serve_job = {}
 
 
 ## 发球区判定：玩家必须站在台后这一带。
@@ -2222,22 +2876,69 @@ func _update_serve_traj(delta: float) -> void:
 		_serve_traj.visible = false
 		for r in _serve_traj_rings:
 			r.visible = false
+		# ★ 不在发球态就别让任务继续跑 —— 它每帧都会试候选，白烧 CPU。
+		_serve_job = {}
 		return
-	# 节流：约 10 Hz 重算，避免每帧跑解算器
-	_serve_preview_t -= delta
-	if _serve_preview_t > 0.0 and _serve_traj.visible:
-		return
-	_serve_preview_t = 0.1
 	if _serve_plan.is_empty():
 		return
 	# ★ 瞄准点每次重算都刷一遍 —— 转视角时预览落点要跟着走，
 	#   只建一次的话预览会一直停在开局随机出来的那个点上。
 	_apply_serve_aim(_serve_plan)
-	# 提示用的出手点：拿在手里的球的位置（y 抬到出手高度）
-	var hp := _serve_hold_point()
-	var from := Vector3(hp.x, _serve_strike_y(), hp.z)
-	var res := _solve_legal_serve(from, _serve_plan)
-	var v: Vector3 = res["v"] if bool(res["ok"]) else Vector3.ZERO
+	# ★ 预览的飞行时间要**把蓄力算进去**（量化成 serve_charge_preview_steps 档），
+	#   这样出手时的飞行时间与预览解一致：既不会「蓄力白按」，也不会出手重解。
+	_apply_serve_charge_to_plan(_serve_plan)
+	# 出手点：**唯一**走 _serve_launch_point()（预览 / 抛球 / 出手共用同一处）。
+	# ★ 以前预览拿 _serve_hold_point 的 x、出手却掷一个随机 from_x，
+	#   玩家看到的线和真正发生的球路对不上 —— 2026-10-06 换成单一定义点。
+	var from := _serve_launch_point()
+
+	# ── ① 推进解算任务（每帧几个候选，绝不一次跑完）──
+	#   ★ 输入变了就重建任务；输入没变且已有解就什么都不做。
+	#   ★ 与重画分开：任务**每帧**推进（这样才能摊平），重画才受节流约束。
+	var done := false
+	if not _serve_job.is_empty() \
+		and not _serve_job_matches(_serve_job, from, _serve_plan):
+		_serve_job = {}
+	if _serve_job.is_empty() and not _serve_solution_matches(from, _serve_plan):
+		_serve_job = _make_serve_job(from, _serve_plan)
+		serve_solve_calls += 1
+		# ★ 可选的总时长兜底（默认关）：见 serve_solve_budget_ms 的说明。
+		if serve_solve_budget_ms > 0.0:
+			_serve_job["deadline"] = Time.get_ticks_usec() \
+				+ int(serve_solve_budget_ms * 1000.0)
+	if not _serve_job.is_empty():
+		done = _advance_serve_job(_serve_job, serve_step_cands)
+		_publish_serve_job(_serve_job)
+		if done:
+			_serve_job = {}
+
+	# ── ② 重画提示线 ──
+	# ★★ 节流**只**看计时器，不看「上一次画没画出来」。
+	#    写成 `if _serve_preview_t > 0.0 and _serve_traj.visible: return` 是个陷阱：
+	#    只要上一次解算失败（或刚进发球态、线还没画出来）visible 就是 false，
+	#    条件整体为假 → **每一帧都重跑一遍解算器** → 帧率掉到个位数。
+	# ★ 重画**不跟着任务逐帧刷新**：任务跑满一次要十来帧，逐帧重画等于把
+	#   「省下来的解算时间」又花到重画上，而且线会肉眼可见地抖。
+	#   只在「任务这一帧收工了」时立刻补一次（让最终答案马上画出来），
+	#   其余照旧走 0.12 s 节流。
+	_serve_preview_t -= delta
+	# ★★ 出手点 / 瞄准点一动就**立刻补画**一次，不等节流（见 _serve_draw_aim）。
+	#    出手那一刻会重新读一次瞄准点，只按节流画的话框会停在 0.12 s 前的落点上，
+	#    玩家一边转视角一边按左键就会看到「框和球落的地方不一样」。
+	#    站着不动时两个点都不变 → 一次都不多画，开销为 0。
+	var aim_now := Vector2(float(_serve_plan.get("opp_x", 0.0)),
+						   float(_serve_plan.get("opp_z", 0.0)))
+	var moved := not is_inf(_serve_draw_aim.x) \
+		and (_serve_draw_aim.distance_to(aim_now) > serve_preview_aim_eps \
+			or _serve_draw_from.distance_to(from) > serve_preview_from_eps)
+	if not done and not moved and _serve_preview_t > 0.0:
+		return
+	_serve_preview_t = serve_preview_interval
+	_serve_draw_aim = aim_now
+	_serve_draw_from = from
+	serve_preview_refreshes += 1
+	var res := _serve_sol_res
+	var v: Vector3 = res["v"] if bool(res.get("ok", false)) else Vector3.ZERO
 	if v == Vector3.ZERO:
 		_serve_traj.visible = false
 		for r in _serve_traj_rings:
@@ -2262,7 +2963,12 @@ func _update_serve_traj(delta: float) -> void:
 		if i < bl.size():
 			_serve_traj_rings[i].visible = true
 			var bp: Vector3 = bl[i]
-			_serve_traj_rings[i].global_position = Vector3(bp.x, table_height + 0.03, bp.z)
+			# ★ 不入树时设 global_position 会刷 `Condition "!is_inside_tree()" is true`
+			#   （离屏探针会走到这里）。父节点在原点，局部坐标等价。
+			if _serve_traj_rings[i].is_inside_tree():
+				_serve_traj_rings[i].global_position = Vector3(bp.x, table_height + 0.03, bp.z)
+			else:
+				_serve_traj_rings[i].position = Vector3(bp.x, table_height + 0.03, bp.z)
 		else:
 			_serve_traj_rings[i].visible = false
 
@@ -2332,43 +3038,49 @@ func _player_serve(from_override: Vector3 = Vector3.ZERO) -> void:
 		return
 	_tossing = false
 
+	# ★ 先把发球计划准备好 —— 出手点的横向位置要从计划里读（from_x），
+	#   而预览线用的也是它。以前两边各掷一个随机数，玩家看到的提示线
+	#   画的是一条**根本不会发生**的弹道。
+	if _serve_plan.is_empty():
+		_serve_plan = _plan_serve(1)
+
 	var from := from_override
 	if from == Vector3.ZERO:
-		var fx := randf_range(-0.30, 0.30)
-		if _doubles:
-			# 发球的人不一定站在台中间 —— 从他自己的站位出手
-			fx = _my_x(_server_idx) + randf_range(-0.12, 0.12)
-		# 出手点跟着玩家在台后的位置走（不再是写死的 1.30）。
-		# ★ 下限用端线而不是发球区下沿：球拍会往台面方向前伸 serve_launch_ahead，
-		#   按发球区下沿钳的话球会被带回端线**之内**（实测 1.36 < 1.37），违反 2.6.1。
-		var pz := 1.50
-		if _player != null:
-			pz = clampf(_player.global_position.z - serve_launch_ahead,
-						table_half_length + serve_end_line_margin, serve_zone_max_z)
-		# 高度也走 _serve_strike_y()：蹲着等发球被兜底代发时，
-		# 出手高度不会从手里的 0.88 突然跳到 1.02。
-		from = Vector3(fx, _serve_strike_y(), pz)
+		# 没抛球（被兜底代发 / 探针直接调）就走**同一个**出手点定义，
+		# 不再自己算一遍 pz / 也不读计划里的 from_x —— 那正是两边对不上的源头。
+		from = _serve_launch_point()
 
 	# ★ 发球也能蓄力 —— 用户报的「发球无法蓄力」。
 	#   根因：_serve_grip 走的是「切握拍 + 挥一下 + 直接发出去」这条独立路径，
 	#   从头到尾没读过 _charge_t / _charging，所以按住空格对发球毫无作用。
-	#   现在按蓄力深度压缩飞行时间（越小越快），并受 serve_speed_max 限速。
-	var power := 0.0
-	if _charging and _charge_t > 0.0:
-		power = clampf(charge_min_power + (1.0 - charge_min_power) * _charge_t, 0.0, 1.0)
-	if _serve_plan.is_empty():
-		_serve_plan = _plan_serve(1)
-	# ★ 出手这一刻再取一次瞄准点：预览是 10 Hz 的，可能在玩家刚转完视角
-	#   和真正出手之间差了不到 0.1 s，拿旧值会打偏一点点。
+	# ★ 出手这一刻再取一次瞄准点：预览是十几次每秒的，可能在玩家刚转完视角
+	#   和真正出手之间差了一点，拿旧值会打偏一点点。
 	_apply_serve_aim(_serve_plan)
-	_serve_plan["spin"] = _shot_spin(0.7)
-	var flight := float(_serve_plan.get("flight", _flight_time())) \
-		* lerpf(1.0, serve_power_flight_scale, power)
+	# ★ 自旋不在这里重掷 —— _plan_serve 已经掷过一次，预览用的就是那个值。
+	#   （重掷的话预览线和实际球路的侧拐不是同一条，而且会让解算缓存永久失效。）
 
+	# ★★ 飞行时间必须与预览**逐位相同**，所以直接调预览用的那个函数，
+	#    而不是在这儿把公式再抄一遍 —— 抄一遍就迟早会抄歪，这次就是：
+	#    这边用连续的 _charge_t，预览却把蓄力量化成 serve_charge_preview_steps 档，
+	#    两者最多差半档 → 缓存键失配 → 出手当场重搜一次（卡一下），
+	#    而且解出来的弹道和玩家看到的预览线不是同一条（落点自然也不一样）。
 	# ★ 合规发球：先弹己方半台 → 过网 → 再弹对方半台（用户报的「要先弹自己的桌面」）。
 	var plan := _serve_plan.duplicate()
+	_apply_serve_charge_to_plan(plan)
+	var flight := float(plan.get("flight_eff", plan.get("flight", _flight_time())))
 	plan["flight"] = flight
-	var res := _solve_legal_serve(from, plan)
+	# 只为文案：公式与上面同一处（_quantized_charge_power）。
+	var power := float(_quantized_charge_power())
+	# ★★ 出手**不再跑搜索** —— 直接用预览已经发布的那一份解。
+	#    预览从进发球态起每帧都在推进解算任务、并且第一帧就发布了一次，
+	#    所以这里几乎总能拿到一份**合法**解（哪怕任务还没跑完，
+	#    已发布的也是「目前找到的最接近瞄准点的合法候选」）。
+	#    「发球的时候非常卡」里的那一下，就是出手瞬间那次全量搜索 —— 现在没了。
+	#    ★ 精度代价可忽略：预览解与当前瞄准点最多差
+	#      serve_preview_aim_eps + 转视角一拍的位移，而候选自身的容忍半径
+	#      serve_legal_accept_dist(0.32 m) 远大于它。
+	#    ★ 只有「刚进发球态、一次预览都还没跑到」才真跑一次同步搜索兜底。
+	var res := _serve_solution_for_release(from, plan)
 	var v: Vector3
 	if bool(res["ok"]):
 		v = res["v"]
@@ -2380,7 +3092,10 @@ func _player_serve(from_override: Vector3 = Vector3.ZERO) -> void:
 		v = _cap_serve_speed(from, v)
 
 	_reset_rally_state()
-	b.launch(from, v, _shot_spin(0.7))
+	# ★ 用**解算时那一份**自旋，不要在这里重掷：解算器是拿 plan["spin"] 算出
+	#   的「合规轨迹」，发射时换成另一个自旋，球的侧拐就对不上了 ——
+	#   「解算明明过了网、实际却撞网」这类诡异失分就是这么来的。
+	b.launch(from, v, float(plan.get("spin", 0.0)))
 	_serve_plan = {}
 	_last_hitter = Hitter.PLAYER
 	# 刚出手的一瞬间球就贴着拍面，不锁一下冷却会被 _check_hit 立刻「再打一次」
@@ -2530,6 +3245,16 @@ func _input(event: InputEvent) -> void:
 		_audio_call("start_ambience")
 
 
+# ── 发球解算的性能自检指标 ──────────────────────────────────
+# 服务量：`serve_solve_calls` 解算次数、`serve_solve_us_total` 累计微秒、
+# `serve_solve_us_worst` 单次最坏微秒、`serve_last_attempts` 上次试了几个候选、
+# `serve_budget_holds` 预算截断次数、`serve_preview_refreshes` 预览真正重算次数。
+#
+# ★ 这一组**不是**调试残留，是回归 J 组的观测口：
+#   「玩家站着瞄准一秒只解一次」「转视角时第一次尝试就命中」这类不变量
+#   只能靠它们断言（量墙钟会被机器负载带偏，量个数才是确定性的）。
+#   别在没有替代指标的情况下删掉 —— 上一轮加性能 HUD 时顺手删过一次，
+#   结果 J 组直接报 `Nonexistent 'int' constructor`。
 func _process(delta: float) -> void:
 	_guard_mouse_mode()
 	match _state:
@@ -2916,6 +3641,11 @@ func _on_swing_end() -> void:
 	var b := _ball as PingPongBall
 	if b == null or not b.is_flying():
 		return
+	# ★ 球还没落到台面上时挥拍**不算失误** —— 那是「还没到该打的时机」，
+	#   不是「球到眼前打空」。不排除的话，上面新加的「必须落台才能击球」
+	#   会把所有提前挥拍都变成白送一分，比不改还糟。
+	if not may_hit_ball():
+		return
 	var rp := _paddle_point()
 	var d := b.global_position - rp
 	if Vector2(d.x, d.z).length() > whiff_fault_radius:
@@ -2958,11 +3688,29 @@ func _timing_quality() -> float:
 ##   x → 走位（最紧）
 ##   z → 站位前后（墩姿时朝网一侧收窄）
 ##   y → 实测来球高度很稳，给一个够用的带
+## 现在允许击球吗 —— 「球必须先落到台面上」这条规则（不允许截击）。
+##
+## 两条判据缺一不可：
+##   ① 球已经在我方半台弹过一次（`_bounces_player >= 1`）；
+##   ② 最后碰球的**不是**我方（`_last_hitter != PLAYER`）。
+## ② 不能省：玩家发球的第一跳本来就落在自己半台，少了它会变成
+##   「自己发完球再补一拍」。
+## ★ 对手那侧不用改：他的回球是被「球落对方半台」这个事件排定的
+##   （_on_bounced_table → _schedule_opponent_return）；队友那条路径
+##   也早就卡了 `_bounces_player >= 1`（球弹起后才出手）。
+func may_hit_ball() -> bool:
+	return _last_hitter != Hitter.PLAYER and _bounces_player >= 1
+
+
 func _check_hit() -> bool:
 	var b := _ball as PingPongBall
 	if b == null or not b.is_flying():
 		return false
 	if _hit_cooldown > 0.0:
+		return false
+	# ★ 球还没落台 → 打不到（用户要的规则）。这一条同时兜住了
+	#   「自己刚打出去的球又去补一拍」。
+	if not may_hit_ball():
 		return false
 	var cam := get_viewport().get_camera_3d()
 	if cam == null:
@@ -3098,6 +3846,15 @@ func _do_hit() -> void:
 	_last_charge_cost = 0.0
 
 	b.launch(from, v, spin)
+
+	# ── 快球反馈 ──
+	# 决策整个在 fast_shot_feedback 里，这里只负责「拿到就弹」。
+	# ★ 顺序要紧：必须在 `_last_hitter` 被改成 PLAYER 之前问，否则「接球」那条
+	#   永远不会命中（那时它已经是 PLAYER 了）。
+	var fb := fast_shot_feedback(_last_hitter, _opp_smash, _opp_shot_speed,
+								 kind, v.length())
+	if not fb.is_empty():
+		_flash_speed(float(fb["speed"]), String(fb["tag"]))
 
 	_swing_timer = -1.0
 	_swing_hit = true
@@ -3330,8 +4087,7 @@ func _opponent_swing(contact_x: float) -> void:
 
 ## 对手各难度的失误率
 func _opponent_miss_chance() -> float:
-	var base := _tier5(opponent_miss_easy, opponent_miss_normal, opponent_miss_hard,
-		opponent_miss_expert, opponent_miss_master)
+	var base := tune("opponent_miss")
 	# ★ 接发球阶段几乎必回（用户要「所有对局里都难以发球就得分」）。
 	#   大师档 1.8% 压到 0.5%，约 200 球才白送一分 —— 发球偷分这条路堵死。
 	if _serve_phase:
@@ -3343,8 +4099,7 @@ func _opponent_miss_chance() -> float:
 
 
 func _opponent_out_chance() -> float:
-	var base := _tier5(opponent_out_easy, opponent_out_normal, opponent_out_hard,
-		opponent_out_expert, opponent_out_master)
+	var base := tune("opponent_out")
 	# 接发球时「碰到但回球出台」也压低，但压得比 miss 轻 ——
 	# 全挡住的话对手会变成一堵墙，保留一点失误才有来有回。
 	if _serve_phase:
@@ -3354,9 +4109,7 @@ func _opponent_out_chance() -> float:
 
 ## 对手回球飞行时间的倍率（乘在 opponent_return_flight 上）。
 func _opponent_return_flight_scale() -> float:
-	var base := _tier5(opponent_return_flight_easy, opponent_return_flight_normal,
-		opponent_return_flight_hard, opponent_return_flight_expert,
-		opponent_return_flight_master)
+	var base := tune("opponent_return_flight")
 	# ★ AI 累了就打不出快球：飞行时间被拉长，回球又高又慢，玩家更好上手。
 	var fatigue := 1.0 - clampf(_opp_stamina / maxf(opponent_max_stamina, 0.01), 0.0, 1.0)
 	return base * lerpf(1.0, opponent_fatigue_flight_scale, fatigue)
@@ -3364,9 +4117,7 @@ func _opponent_return_flight_scale() -> float:
 
 ## 对手回球落点的横向散布（占半台比例）。
 func _opponent_return_spread() -> float:
-	return _tier5(opponent_return_spread_easy, opponent_return_spread_normal,
-		opponent_return_spread_hard, opponent_return_spread_expert,
-		opponent_return_spread_master)
+	return tune("opponent_return_spread")
 
 
 ## 球合法落在对方半台 —— 排一次对手回球。
@@ -3468,12 +4219,28 @@ func _update_opponent_return(delta: float) -> void:
 ## h ≥ opp_smash_h_full 时吃满 opp_smash_chance_high（高球基本必扣），
 ## 中间线性过渡 —— 用户要的「球越高越容易触发」。
 ## 抽成独立函数是为了能被探针直接扫曲线，不然只能靠肉眼在游戏里猜。
-func opp_smash_chance_at(h: float) -> float:
+##
+## `spin`：**触球那一刻**球的旋量（`PingPongBall.get_spin()`）。旋得越足，对手越难扣杀
+## （见 spin_smash_discount）。★ 默认 0.0 = 不打折 —— 所以老调用方和探针
+## 只传一个参数时行为**完全不变**。
+func opp_smash_chance_at(h: float, spin: float = 0.0) -> float:
 	if not opp_smash_enabled:
 		return 0.0
 	var k := clampf(inverse_lerp(opp_smash_h_low, opp_smash_h_full, h), 0.0, 1.0)
-	return clampf(lerpf(opp_smash_chance_low, opp_smash_chance_high, k) * _opp_rage(),
-		0.0, 1.0)
+	var p := lerpf(opp_smash_chance_low, opp_smash_chance_high, k)
+	# 旋转折扣与「触球高度」相乘：两个乘子各自独立可调，互不干扰。
+	p *= _spin_smash_factor(spin)
+	return clampf(p * _opp_rage(), 0.0, 1.0)
+
+
+## 旋量 → 扣杀概率的倍率。1.0 = 不打折；|旋| >= spin_smash_full 时吃到满折扣
+## spin_smash_discount。
+##
+## ★ 单独抽出来是为了能被探针直接扫「旋量 → 倍率」这条曲线 ——
+##   和 opp_smash_chance_at 抽出来的理由一样：不然只能靠肉眼在游戏里猜。
+func _spin_smash_factor(spin: float) -> float:
+	var k := clampf(absf(spin) / maxf(spin_smash_full, 0.001), 0.0, 1.0)
+	return lerpf(1.0, clampf(spin_smash_discount, 0.0, 1.0), k)
 
 
 ## 对手的「凶度」倍数：玩家连续得分时他扣得更凶（方案 C 的第三根支柱）。
@@ -3513,9 +4280,13 @@ func _do_opponent_return() -> void:
 	#      球来得多高就从多高打出去，于是高球自然解出一条陡而快的弧线 ——
 	#      看着像扣杀，但概率不可控、也没法调。现在概率、球速、落点全可调。
 	_opp_contact_y = from.y
+	_opp_contact_spin = b.get_spin()
 	_opp_smash = false
 	if opp_smash_enabled and not _opp_will_out:
-		_opp_smash = randf() < opp_smash_chance_at(from.y)
+		# ★ 传**触球那一刻**的旋量：玩家旋得越足，这一拍越不容易被扣杀
+		#   （见 spin_smash_discount）。读的是真实旋量而不是「玩家按没按 Z/C」——
+		#   旋量在每次弹跳后乘 spin_decay，所以「旋了但很轻」和「没旋」能分开。
+		_opp_smash = randf() < opp_smash_chance_at(from.y, _opp_contact_spin)
 	if _opp_smash:
 		_opp_smashes += 1
 
@@ -3551,6 +4322,11 @@ func _do_opponent_return() -> void:
 
 	var v := _solve_return(from, target, flight, cap)
 	b.launch(from, v, randf_range(-0.5, 0.9))
+	# 记下**出手**球速（不是等玩家接球时再读）—— 阻力在 0.3 s 里能把速度砍掉三四成，
+	# 触球时的速度已经不能代表「对手这一拍有多快」。快球反馈要用它。
+	# ★ 扣杀和普通回球**都记**：判据是「够不够快」，不是「是不是扣杀」
+	#   （见 fast_shot_feedback / speed_flash_min）。
+	_opp_shot_speed = v.length()
 
 	_last_hitter = Hitter.OPPONENT
 	_bounces_player = 0
@@ -3800,7 +4576,9 @@ func _do_partner_serve() -> void:
 		if node.has_method("trigger_swing"):
 			node.call("trigger_swing")
 
-	var spin := _shot_spin(0.7)
+	# ★ 同 _player_serve：发射的自旋必须就是解算用的那一份，否则预览/解算
+	#   与真实球路对不上。
+	var spin := float(plan.get("spin", 0.0))
 	_reset_rally_state()
 	b.launch(from, v, spin)
 	_serve_plan = {}
@@ -4547,6 +5325,10 @@ func _build_hud() -> void:
 	_build_score_hud()
 	_build_stamina_hud()
 	_build_rally_hud()
+	_build_rage_hud()
+	# ★ 必须排在 _apply_hud_font 之前：它靠遍历 HUD 子树给 Label 套中文字体，
+	#   晚建的控件（尤其是「爆冲」「接住扣杀」这种中文小字）会漏掉、显示成方块。
+	_build_speed_hud()
 
 	# 统一给 HUD 里所有 Label 套上中文字体（含刚建好的比分/体力条那组）
 	_apply_hud_font(_hud)
@@ -4643,6 +5425,19 @@ func _build_score_hud() -> void:
 	_tour_label.add_theme_color_override("font_color", Color(1.0, 0.83, 0.34))
 	_tour_label.visible = false
 	col.add_child(_tour_label)
+
+	# ── 凶度提示（对手连续得分 → 他扣得更凶，见 _opp_rage）──
+	# ★ 为什么挂在比分面板里而不是屏幕中上方：中上方已经被连拍计数占了，
+	#   再塞一行会和「×N」抢注意力；而凶度是**比分语境**下的信息
+	#   （「我连得 3 分，所以他变凶了」），贴着比分才对得上。
+	# ★ 空文本时靠 visible 隐藏而不是留空字符串 —— 留空会占一行高度，
+	#   把上面那行难度字和下面板底的距离拉开。
+	_rage_label = Label.new()
+	_rage_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_rage_label.add_theme_font_size_override("font_size", 15)
+	_rage_label.add_theme_color_override("font_color", RAGE_COLOR)
+	_rage_label.visible = false
+	col.add_child(_rage_label)
 
 
 ## 比分面板三个列宽常量 —— 名字行和数字行共用，保证纵向对齐。
@@ -4810,6 +5605,109 @@ func _build_rally_hud() -> void:
 	wrap.visible = false
 
 
+# ═══════════════════════════════════════════════════════════
+# 凶度 HUD —— 对手「变凶」的可见反馈
+# ═══════════════════════════════════════════════════════════
+## 屏幕四边泛红 + 比分栏一行提示字。
+##
+## ★ 这一层**不含任何数值逻辑** —— 凶度本身（`_opp_rage()`）早就在跑，
+##   它只乘在扣杀概率上。这里只是把那个已经存在的状态**翻译成玩家看得见的东西**。
+##   所以它坏掉最坏也只是「反馈没了」，不会影响任何一球的判定。
+## ★ 四条边而不是一整块全屏色块：全屏染色会把球和球台一起染红，
+##   而「边缘泛红」才是想传递的「压迫感从画面外压进来」。
+func _build_rage_hud() -> void:
+	for i: int in range(4):
+		var e := ColorRect.new()
+		e.name = "RageEdge%d" % i
+		e.color = RAGE_COLOR
+		e.modulate.a = 0.0
+		e.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		e.visible = false
+		match i:
+			0:  # 上
+				e.set_anchors_preset(Control.PRESET_TOP_WIDE)
+				e.offset_bottom = rage_edge_thickness
+			1:  # 下
+				e.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+				e.offset_top = -rage_edge_thickness
+			2:  # 左
+				e.set_anchors_preset(Control.PRESET_LEFT_WIDE)
+				e.offset_right = rage_edge_thickness
+			_:  # 右
+				e.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
+				e.offset_left = -rage_edge_thickness
+		_hud.add_child(e)
+		# 沉到最底层：红边绝不能盖住比分面板或连拍数字。
+		_hud.move_child(e, 0)
+		_rage_edges.append(e)
+
+
+## 当前凶度档位（0 = 没进入状态，1 = 进入状态，2 = 火力全开）。
+##
+## ★ 抽成独立纯函数是为了能被探针直接扫 —— 否则只能靠肉眼在游戏里数连胜。
+##   档位是**给玩家看的粗粒度**，和 _opp_rage() 的连续倍率刻意分开：
+##   倍率每分都在变（1.00 → 1.28 → 1.56 → 1.80），但提示文案每分都换一次
+##   等于没提示。两档对应「他认真了」和「他拼命了」两个可感知的台阶。
+func rage_level() -> int:
+	if _match_over or _win_streak < STREAK_NOTE_AT:
+		return 0
+	return 2 if _win_streak >= 4 else 1
+
+
+## 凶度档位对应的提示文案。0 档返回空串。
+func rage_note(lvl: int) -> String:
+	match lvl:
+		1: return "★ 对手进入状态 —— 他开始抢冲了"
+		2: return "★ 对手火力全开 —— 别给他高球"
+		_: return ""
+
+
+## 凶度 HUD 每帧刷新。
+func _update_rage_hud(delta: float) -> void:
+	if _rage_edges.is_empty():
+		return
+	var lvl := rage_level()
+	# 目标可见度：按倍率在 [1, streak_rage_max] 里的位置归一化。
+	var target := 0.0
+	if lvl > 0:
+		target = clampf((_opp_rage() - 1.0) / maxf(streak_rage_max - 1.0, 0.001), 0.0, 1.0)
+	if lvl > _rage_shown and lvl > 0:
+		# ★ 进入凶度就**立刻亮出来** —— 玩家必须能把「这一分他开始凶了」
+		#   和「我连得分」对上号；渐显的话等他注意到，这一分已经打完了。
+		_rage_vis = target
+	elif target < _rage_vis:
+		# 掉下来时反而要慢一点退，留一段「余温」，
+		# 不然他一丢分红边就消失，玩家来不及把因果关系连起来。
+		_rage_vis = move_toward(_rage_vis, target, rage_fade_speed * delta * 1.6)
+	else:
+		_rage_vis = move_toward(_rage_vis, target, rage_fade_speed * delta)
+
+	# 呼吸。★ 相位一直累加（哪怕没显示），这样每次亮起来时相位是随机的，
+	#   不会每次都从「最暗」开始 —— 那看着像卡顿了一下。
+	_rage_phase = fmod(_rage_phase + delta, 100.0)
+	var pulse := 1.0
+	if _rage_vis > 0.001:
+		pulse = 0.76 + 0.24 * sin(_rage_phase * TAU * rage_pulse_hz)
+	var a := rage_edge_max_alpha * _rage_vis * pulse
+	for e: ColorRect in _rage_edges:
+		var lit := a > 0.001
+		if e.visible != lit:
+			e.visible = lit
+		if lit:
+			e.modulate.a = a
+
+	if _rage_label == null:
+		return
+	if lvl != _rage_shown:
+		_rage_shown = lvl
+		_rage_label.visible = lvl > 0
+		_rage_label.text = rage_note(lvl)
+		# ★ 刷新字体：字号/颜色是运行时才确定的，_apply_hud_font 在建树那一刻
+		#   还没跑到这一行（它扫的是**已有的** Label，且这里 text 还是空的）。
+		if lvl > 0:
+			_rage_label.add_theme_font_override("font", HUD_FONT)
+
+
 ## 连拍 HUD 每帧刷新。只在与上一帧不同时才写 Label ——
 ## add_theme_*_override 每次都触发一次主题重算 + 重绘，和上面比分那块同理。
 func _update_rally_hud(delta: float) -> void:
@@ -4923,8 +5821,171 @@ func _rally_tier() -> int:
 	return 0
 
 
+# ═══════════════════════════════════════════════════════════
+# 快球反馈 —— 屏幕中下方的巨大球速数字
+# ═══════════════════════════════════════════════════════════
+## 用户要的「接到或者打出速度较快的扣球时，屏幕上出现明显的反馈」。
+##
+## ★ 和凶度 HUD 一样，这一层**不含任何数值逻辑** —— 球速、扣杀判定全都在别处跑，
+##   这里只把它们**翻译成玩家看得见的东西**。所以它坏掉最坏也只是「反馈没了」，
+##   不会影响任何一球的判定。
+## ★ 为什么值得做：接扣杀是这游戏最紧张的一瞬间（球又平又快、反应窗口最短），
+##   但接住了只有比分 +1 —— 和随手挡回去一个普通球长得一模一样。
+##   给个巨大的数字，玩家才知道「我刚才做成了一件难的事」。
+func _build_speed_hud() -> void:
+	# ★ 用 anchor_y 定位而不是 PRESET_FULL_RECT + 垂直居中：
+	#   后者没法把整块往下推，而正中（0.5）是球和球台，大字会挡住这一拍本身。
+	var root := VBoxContainer.new()
+	root.name = "SpeedHud"
+	root.anchor_left = 0.0
+	root.anchor_right = 1.0
+	root.anchor_top = speed_flash_anchor_y
+	root.anchor_bottom = speed_flash_anchor_y
+	root.offset_top = -96.0
+	root.offset_bottom = 96.0
+	root.alignment = BoxContainer.ALIGNMENT_CENTER
+	root.add_theme_constant_override("separation", -6)
+	# 纯显示层，绝不接受鼠标事件 —— HUD 挡到点击会让「点一下挥拍」失灵
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hud.add_child(root)
+	_speed_hud_root = root
+
+	_speed_label = Label.new()
+	_speed_label.text = ""
+	_speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_speed_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_speed_label.add_theme_font_size_override("font_size", speed_flash_size)
+	_speed_label.custom_minimum_size = Vector2(0.0, 120.0)
+	_speed_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(_speed_label)
+
+	_speed_tag = Label.new()
+	_speed_tag.text = ""
+	_speed_tag.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_speed_tag.add_theme_font_size_override("font_size", 28)
+	_speed_tag.custom_minimum_size = Vector2(0.0, 34.0)
+	_speed_tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(_speed_tag)
+
+	root.visible = false
+
+
+## 这一拍该不该弹「快球反馈」，该弹的话弹多少球速、配什么文案。
+## 返回 `{}` = 不弹；否则 `{"speed": m/s, "tag": 文案}`。
+##
+## ★★ 做成纯函数只为了能被探针**直接验** —— 决策藏在一大段 `_do_hit` 里的话，
+##   「阈值调过头、实际一次都不触发」这种事只能靠真人玩才发现。
+##   本轮就踩过：阈值一开始定 7.0，而对手扣杀的球速还要乘难度的
+##   opponent_return_flight（实测表 D：简单 5.7~7.0 / 大师 8.7~11.2 m/s），
+##   7.0 会让**简单和普通档的玩家整档看不到这个反馈**。
+##
+## ★★ 两条路**用同一个门槛**（`speed_flash_min`，用户 2026-10-06 二次定稿）：
+##   ① 接球：对手这一拍**出手**球速够快 → 报**对手出手那一刻**的球速；
+##   ② 打出：自己这一拍球速够快 → 报自己的球速。
+##
+##   之前是「接球不卡阈值、只有自己打出才卡」，理由是低难度扣杀也才 5.7 m/s，
+##   怕卡阈值把整档抹掉。用户看了实测表之后要求改成「球速大于 5 的接球与打出
+##   都要有反馈」—— 5.0 正好落在「对手普通回球 4.99」和「对手扣杀 ≥5.66」之间，
+##   所以接球那条路现在**天然只会被扣杀（和以后可能有的快球）触发**，
+##   既满足要求，也不会被难度档抹平。
+##
+## ★ `last_hitter == OPPONENT` 这一条不能省：双打里队友刚回完球时，
+##   `_opp_smash` / `_opp_shot_speed` 还是上一拍的旧值 ——
+##   不加这道门就会把队友打出的球报成「接住扣杀」。
+func fast_shot_feedback(last_hitter: int, opp_smash: bool, opp_shot_speed: float,
+						kind: int, my_speed: float) -> Dictionary:
+	# ① 接球：报的是**对手出手**那一刻的球速，不是这一拍我打多快。
+	if last_hitter == Hitter.OPPONENT and opp_shot_speed >= speed_flash_min:
+		return {"speed": opp_shot_speed,
+				"tag": "接住扣杀！" if opp_smash else "接住快球！"}
+	# ② 打出：报自己的球速。
+	if my_speed >= speed_flash_min:
+		match kind:
+			HitKind.LOOP:
+				return {"speed": my_speed, "tag": "爆冲！"}
+			HitKind.FLICK:
+				return {"speed": my_speed, "tag": "暴拧！"}
+		return {"speed": my_speed, "tag": "快球！"}
+	return {}
+
+
+## 弹一次「巨大球速数字 + 呐喊」。
+##
+## ★ **阈值不在这里判，由调用方判**（`fast_shot_feedback`）——
+##   接球与打出报的球速来源不同（接球报对手出手值、打出报自己的），
+##   但**门槛是同一个** `speed_flash_min`。
+##
+## ★ 传进来的必须是**出手那一刻的实测球速**，不是上限参数 ——
+##   `opp_smash_speed_max(32)` / `return_speed_max(24)` 在本工程从来没被触发过
+##   （实测出手球速只有 5~11 m/s），拿它们当显示值会凭空大出三四倍。
+func _flash_speed(speed: float, tag: String) -> void:
+	_speed_value = speed
+	_speed_tag_text = tag
+	_speed_t = speed_flash_time
+	_speed_pop = 1.0
+	_speed_flashes += 1
+	_speed_last = speed
+	# 呐喊规格跟着球速走：越快越炸。★ 两档都用真实观众呐喊，不用奶龙 ——
+	# 奶龙已经改派给「玩家失分」，见 play_concede()。
+	_audio_call("play_rally_cheer", [3 if speed >= speed_flash_loud else 2])
+
+
+func _update_speed_hud(delta: float) -> void:
+	if _speed_hud_root == null or _speed_label == null:
+		return
+
+	# ── 倒计时衰减 ──
+	# ★ 放在 visible 判断**之前**：回合结束时 HUD 会隐藏，
+	#   要是把衰减放在隐藏之后，最后一次数字会永远卡在屏幕上。
+	#   （同 _update_rally_hud 里里程碑闪屏那条注释记的坑。）
+	if _speed_t > 0.0:
+		_speed_t = maxf(_speed_t - delta, 0.0)
+	if _speed_pop > 0.0:
+		_speed_pop = maxf(_speed_pop - delta * speed_flash_pop_decay, 0.0)
+
+	# 比赛结束后不再显示：那不是「刚发生的事」，挂着会误导。
+	var show := _speed_t > 0.0 and not _match_over
+	_speed_hud_root.visible = show
+	if not show:
+		return
+
+	# 数字随球速"变烫"：特别快 → 橙红，中等快 → 亮黄，刚够门槛 → 橙黄。
+	# ★ 颜色只跟**当前这一次**的球速走，和凶度那套「档位」无关。
+	var col := Color(1.00, 0.86, 0.32)
+	if _speed_value >= speed_flash_loud:
+		col = Color(1.00, 0.36, 0.24)
+	elif _speed_value >= (speed_flash_min + speed_flash_loud) * 0.5:
+		col = Color(1.00, 0.58, 0.18)
+
+	# 大字 = 数值 + 单位。★ 单位跟着一起放大是有意的：
+	#   只写「7.8」会让人以为是比分或连拍数，戴上「m/s」才是球速枪的读数。
+	#   也沿用游戏里已有的口径（_msg 里发球 / 击球显示的也是 m/s）。
+	var txt := "%.1f m/s" % _speed_value
+	if txt != _speed_label.text:
+		_speed_label.text = txt
+		_speed_label.add_theme_color_override("font_color", col)
+		_speed_label.add_theme_constant_override("outline_size", 10)
+		_speed_label.add_theme_color_override("font_outline_color",
+			Color(0.04, 0.05, 0.09, 0.92))
+
+	# 弹跳。★ pivot_offset 必须取控件中心，否则会从左上角放大、数字往右下跑。
+	if _speed_label.size.x > 1.0:
+		_speed_label.pivot_offset = _speed_label.size * 0.5
+	var s := 1.0 + speed_flash_pop * _speed_pop
+	_speed_label.scale = Vector2(s, s)
+
+	if _speed_tag.text != _speed_tag_text:
+		_speed_tag.text = _speed_tag_text
+		_speed_tag.add_theme_color_override("font_color", col)
+		_speed_tag.add_theme_constant_override("outline_size", 6)
+		_speed_tag.add_theme_color_override("font_outline_color",
+			Color(0.04, 0.05, 0.09, 0.90))
+
+
 func _update_hud(delta: float) -> void:
 	_update_rally_hud(delta)
+	_update_rage_hud(delta)
+	_update_speed_hud(delta)
 	# ── 右上角大比分 ──
 	# ★ 只在与上一帧不同时才重刷：add_theme_*_override 每次都会触发一次
 	#   主题重算 + 重绘，而 _update_hud 是每帧调的 —— 不缓存的话
@@ -5184,6 +6245,46 @@ func _guard_mouse_mode() -> void:
 	_release_mouse()
 
 
+## ── 赛后评价称号（2026-10-06，用户要「每场比赛结束后给个称号，字号要大明显」）──
+##
+## 一句话给这一局定性，结算面板用**大字**居中显示。
+##
+## ★★ 做成**纯函数**（只吃一个统计字典、不读任何成员）是为了能被探针直接验：
+##   这里面全是阈值，最容易出现「调过头 → 某个称号永远拿不到」而没人发现
+##   —— 快球反馈那次就踩过（阈值 7.0 让简单/普通档整档看不到）。
+##   `d` 的键与 `_show_result` 交给 `open_result` 的那份完全一致。
+##
+## 优先级：先两个**极端**（它们比长对拉更能代表这一局），再看长对拉，
+## 最后按分差从大到小 —— 先命中的先返回。
+func match_title(d: Dictionary) -> String:
+	var won := bool(d.get("won", false))
+	var own := int(d.get("own", 0))
+	var opp := int(d.get("opp", 0))
+	var margin := own - opp
+	var rally := int(d.get("max_rally", 0))
+	if won and opp == 0:
+		return "完胜 · 零封"
+	if not won and own == 0:
+		return "一败涂地"
+	# ★ 长对拉的门槛取 rally_milestones 的最高档（20），和 HUD 的「神球」档
+	#   是同一个数 —— 两处对不上，玩家会觉得称号是瞎给的。
+	if rally >= rally_milestones[rally_milestones.size() - 1]:
+		return "铁壁对拉"
+	if won:
+		if margin >= 7:
+			return "势如破竹"
+		if margin >= 4:
+			return "稳如磐石"
+		if margin <= 2:
+			return "险胜"
+		return "技高一筹"
+	if margin <= -7:
+		return "雪崩式落败"
+	if margin >= -2:
+		return "惜败"
+	return "稍逊一筹"
+
+
 func _show_result(won: bool, coins_win: int) -> void:
 	if _overlay == null:
 		return
@@ -5199,7 +6300,7 @@ func _show_result(won: bool, coins_win: int) -> void:
 	# 混进「赢局奖励」里玩家就看不见连胜在起作用了。
 	var win_only := maxi(coins_win - blowout - _streak_bonus, 0)
 
-	_overlay.call("open_result", {
+	var payload := {
 		"won": won,
 		"own": _player_score,
 		"opp": _opponent_score,
@@ -5215,7 +6316,10 @@ func _show_result(won: bool, coins_win: int) -> void:
 		"coins_total": _coins_from_points + _coins_from_rally + coins_win,
 		"claimable": claimable,
 		"rank": _rank_report,
-	})
+	}
+	# ★ 称号只看**上面这份 payload**（纯函数），面板那边只负责把它画大。
+	payload["title"] = match_title(payload)
+	_overlay.call("open_result", payload)
 
 
 # ───────────── 对外接口（自动化测试用，续）─────────────
