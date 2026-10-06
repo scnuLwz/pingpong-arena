@@ -1,9 +1,32 @@
 # 乒乓竞技场（PingPong Arena）
 
+> **⬇ [下载 Windows 版 · 62.7 MB · 免安装](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena-win64.zip)**
+> —— 解压后双击 `pingpong-arena.exe` 即玩。
+
 Godot 4.7.2 的第一人称乒乓球游戏。持球、对打、发球解算、AI 调度、联赛与排位、
 球拍抽卡、10 个形态各异的场馆 —— 全部由 GDScript 生成，场景零手工拖拽。
 
-## 跑起来
+## ⬇ 下载玩（Windows 64 位）
+
+不想折腾源码？直接下打包好的版本：**绿色免安装**，解压双击就玩。
+
+| 文件 | 大小 | 说明 |
+|---|---|---|
+| **[pingpong-arena-win64.zip](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena-win64.zip)** | 62.7 MB | **推荐** —— 解压后双击 `pingpong-arena.exe` |
+| [pingpong-arena.exe](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena.exe) | 131 MB | 单文件，免解压，直接双击运行 |
+
+**开玩前读三条**
+
+1. **首次运行会弹 SmartScreen 蓝框** —— 未签名程序的通病，不是病毒：
+   点「**更多信息**」→「**仍要运行**」。
+2. **必须用电脑**：键盘 + 鼠标操作，手机玩不了。
+3. Windows 10/11 64 位。原生 **Forward+ 渲染 + 4× MSAA + Jolt 物理** ——
+   就是开发机上按 F5 那一套；网页版受浏览器限制，画质是精简过的。
+
+存档在 `%APPDATA%\Godot\app_userdata\cs1\profile.json`；
+完整说明与 SHA-256 见 [Releases](https://github.com/scnuLwz/pingpong-arena/releases/latest)。
+
+## 跑起来（从源码）
 
 ```bash
 # 桌面版
