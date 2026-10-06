@@ -309,7 +309,13 @@ func simulate_apex(from: Vector3, vel: Vector3, max_time: float = 5.0,
 ##                 ["NET", ...]    = 撞网
 ##                 ["FLOOR"]       = 出界落地
 ##   B 后面的数字是弹跳所在的半台：+1 = 玩家侧(z>0)、-1 = 对方侧(z<0)。
-##   bounces 是每次台面弹跳的世界坐标（用来挑「第二跳最接近目标落点」的解）。
+##   bounces 是每次**台面**弹跳的世界坐标（用来挑「第二跳最接近目标落点」的解）。
+##   ★★ contacts（2026-10-06）：与 events **逐位一一对应**的接触点世界坐标，
+##      含撞网点与**落地点**。存在的理由：轨迹提示环以前拿 `bounces[i]` 定位、
+##      又把 y 写死 `table_height` —— 于是球真的「下台」（第二跳落在地上）时，
+##      环既画不出来（bounces 里只有台面弹跳、没有地面），也没法画在台下。
+##      ★ 别把地面接触塞进 `bounces`：解算器拿 `bounces[1]` 当「第二跳落点」
+##        去和瞄准点比距离，混进地面点会让「合法解」的判据整个歪掉。
 ## ★★ `net_clearance`（2026-10-03）：**过网高度余量**（m），默认 0 = 严格照物理判。
 ##
 ##   存在的理由：`simulate_path` 是**离散步进**、真正的 `_physics_process` 是另一套步长，
@@ -349,6 +355,7 @@ func simulate_path(from: Vector3, vel: Vector3, spin: float = 0.0,
 	var net_hi := table_height + net_height + radius + net_clearance
 	var events: Array = []
 	var bounces: Array = []
+	var contacts: Array = []      # 与 events 一一对应（见函数头的 contacts 说明）
 	while t < max_time:
 		# ★ 收工判据放在循环头：NET 分支是 `continue`、台面分支也是 `continue`，
 		#   放这里三种出口都覆盖得到，且只多跑一次循环头的比较。
@@ -373,6 +380,7 @@ func simulate_path(from: Vector3, vel: Vector3, spin: float = 0.0,
 				var hit := prev.lerp(next, f)
 				if absf(hit.x) <= net_half_width and hit.y >= net_lo and hit.y <= net_hi:
 					events.append("NET")
+					contacts.append(hit)
 					v = Vector3(v.x * 0.12, -0.5, v.z * 0.08)
 					p = hit
 					t += dt
@@ -393,14 +401,18 @@ func simulate_path(from: Vector3, vel: Vector3, spin: float = 0.0,
 					p = hit2
 					events.append("B%d" % (1 if hit2.z > 0.0 else -1))
 					bounces.append(hit2)
+					contacts.append(hit2)
 					t += dt
 					continue
 		if next.y <= radius:
 			events.append("FLOOR")
-			return {"events": events, "bounces": bounces}
+			# ★ 落地点取「球心高度 = 球半径」那一帧，不再往前走 —— 与真实
+			#   `_physics_process` 的 `next.y = radius` 是同一个点。
+			contacts.append(Vector3(next.x, radius, next.z))
+			return {"events": events, "bounces": bounces, "contacts": contacts}
 		p = next
 		t += dt
-	return {"events": events, "bounces": bounces}
+	return {"events": events, "bounces": bounces, "contacts": contacts}
 
 
 ## 从事件序列里判断「是不是一次合规发球」。

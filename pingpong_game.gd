@@ -520,6 +520,13 @@ const DIFFICULTY_TABLE := {
 ## 给大了预览会滞后、给小了缓存命中率掉下来。
 @export var serve_preview_from_eps: float = 0.02
 @export var serve_preview_aim_eps: float = 0.02
+## 兜底直落球（解算器找不到合法解时的弹道）预览速度的重算门槛（米）。
+##
+## ★ 它比上面两个 0.02 粗一个数量级，是**故意的**：`_solve_serve` 是同步全搜
+##   （实测几毫秒到几十毫秒），转视角时每帧都换键会把帧率打穿。
+##   而「球落在框里」这条硬保证由 `_serve_draw_v` 照搬机制兜着 ——
+##   缓存略旧只是让框滞后一点，绝不会让球跑到框外面去。
+@export var serve_fallback_aim_eps: float = 0.25
 
 ## 发球区：玩家必须站在台后这一带才能发球 —— 修「距离台面很远也可以发球」。
 ##   z < serve_zone_min：站在台内/贴网（不合规，也不能发）
@@ -678,6 +685,42 @@ const DIFFICULTY_TABLE := {
 @export var opponent_fatigue_miss_scale: float = 2.2
 ## 体力见底时 AI 回球飞行时间放大到多少倍（累了就打不出快球）
 @export var opponent_fatigue_flight_scale: float = 1.22
+## 体力见底时 AI 的**够球横向半径**缩到原来的比例 —— 用户要的
+## 「体力与接球成功范围成正相关」。
+##
+## ★ 与玩家的 `stamina_reach_floor`(0.55) 同构：满体力 1.0、空体力取这个值。
+##   它是**乘**在 `opponent_reach_x`(0.66) 上的，所以见底时够球带
+##   从 ±0.66 收到 ±0.46 —— 半台半宽是 0.7625，也就是**边线那 40% 白送**。
+##
+## ★★ 这是「磨他」这条战术里玩家**唯一看得见**的那一半：
+##   原来把 AI 磨到见底，收益全是概率（失误率 ×2.2、回球变慢 ×1.22），
+##   玩家只能感觉「好像他失误多了」；现在边线球他从「够得到」变成
+##   「够不到」是几何事实，一板斜线就看得出来。
+##
+## ★ 取值 0.70 而不是玩家的 0.55：AI 本来就不靠走位失误送分，
+##   横向半径再砍到 0.55（=±0.36 m）等于「边线球必死」—— 那是难度，
+##   不是战术收益。0.70 留出「拖到他见底 → 拉开角度收割」的窗口就够了。
+##
+## ★★ 只在**回合中**生效，接发球那一拍不缩：见
+##   `_opp_will_hit` 那一段的注释（要守「接发球够球半径 > 发球瞄准跨度」）。
+@export var opponent_fatigue_reach_floor: float = 0.70
+## 一次扣杀的额外体力消耗（**当场扣**，不等回合结束）。0 = 关掉这条机制。
+##
+## ★ 用户要「对方扣杀要扣体力」—— 扣的是**他自己**的（2026-10-06 确认）。
+##   原来扣杀对 AI 是**免费**的：体力只在回合结束按
+##   `opponent_cost_per_rally + per_hit × 拍数` 结算一次，而扣杀只是
+##   「更高概率 + 更快球 + 更压底线」的一组乘子 —— 于是高难度下他越扣越猛、
+##   体力却一点没多掉，「引诱他扣杀来磨他」这条战术根本无从下手。
+##
+## ★ 取值 9.0 ≈ 他自己一个回合的基础消耗（`opponent_cost_per_rally` 10.0）：
+##   一个回合里挨他两次扣杀，这一回合的体力开销就翻倍。
+##
+## ★ 为什么不是「一次扣杀 = 半管」这种狠数：扣杀**通常还能拿分**
+##   （+opponent_point_reward 33.4），所以代价要比奖励小一档才成立。
+##   9.0 的取舍形状正好是：引诱扣杀 → 接住了 → 他净亏；引诱扣杀 → 被扣死
+##   → 他净赚。这是给玩家的一个赌，而不是单方面削弱 AI。
+##   （探针 N 组钉住「扣谁 / 扣多少 / 钳位 / 可关」四件事。）
+@export var opponent_smash_cost: float = 9.0
 
 # ───────────── 爆冲 / 暴拧 ─────────────
 @export_group("爆冲 / 暴拧")
@@ -1318,6 +1361,34 @@ var _serve_preview_t: float = 0.0
 ## 初值用 INF = 「还没画过」，第一次不许触发强制重画（否则节流断言会飘）。
 var _serve_draw_aim: Vector2 = Vector2(INF, INF)
 var _serve_draw_from: Vector3 = Vector3(INF, INF, INF)
+## 上一次画出去的那条预览线用的**速度**。
+##
+## ★★ 这是「发球落点 == 黄色预览框」唯一的**硬保证**：出手时直接照搬它，
+##    而不是重新解一次 —— 重新解出来的速度哪怕只差一点，落点也会挪。
+##
+##    为什么必须这样（2026-10-06 第二轮）：预览和解算都是**滞后**玩家视角的
+##    （解算任务要摊到十来帧才收敛，预览还受 0.12 s 节流）。原来出手那一刻
+##    又重读一次瞄准点、再解一次，解出来的是「玩家现在瞄的」；而框里画的
+##    是「上一拍解出来的」。两者在转视角 / 挪步时必然对不上 ——
+##    玩家报的「发球落点与黄色预览框还是不一样」就是这个。
+##    ★ 改成照搬 `_serve_draw_v` 之后，「球落在框里」成了构造性的事实：
+##      框画的就是它，它落的就是框 —— 不存在「理论上一致、实际差一点」。
+##    ★ 代价：框滞后视角约一帧（`moved` 触发的那次补画就在上一帧的
+##      `_process` 里），比「球飞向看不见的地方」好得多。
+## ZERO = 「还没画过 / 已经作废」，此时出手退回「现取瞄准点 + 解算」。
+var _serve_draw_v: Vector3 = Vector3.ZERO
+
+## 兜底直落球的预览速度缓存（键 = 出手点 + 瞄准点 + 飞行时间）。
+## ★ 解算器找不到合法解时，球并不是不飞了 —— 它会走 `_serve_fallback_velocity`
+##   的直落弹道。以前预览只画合法解，这时把环整块藏掉，玩家看到的是一片空白，
+##   而球照样飞出去 → 「落点与预览框不一样」的另一半根因。
+## ★ 重算门槛故意放得比解算缓存粗（serve_fallback_aim_eps）：
+##   `_solve_serve` 是同步全搜，转视角时每帧换键会很卡；而照搬 `_serve_draw_v`
+##   的机制让「缓存略旧」完全无害 —— 球落在框里这条依然成立。
+var _serve_fb_from: Vector3 = Vector3(INF, INF, INF)
+var _serve_fb_aim: Vector2 = Vector2(INF, INF)
+var _serve_fb_flight: float = -1.0
+var _serve_fb_v: Vector3 = Vector3.ZERO
 
 ## 上一次发球解算的输入快照 + 结果。
 ## ★ 存在的理由：`_solve_legal_serve` 一次要跑 180 个候选、原生就 150 ms，
@@ -2035,6 +2106,13 @@ func start_serve() -> void:
 		# 「瞄准点动了 → 强制重画」，白多画一次。
 		_serve_draw_aim = Vector2(INF, INF)
 		_serve_draw_from = Vector3(INF, INF, INF)
+		# ★ 连「画出去的那条速度」一起作废 —— 出手照搬的就是它，
+		#   留着上一发的值 = 这一发会用上一发的速度飞出去。
+		_serve_draw_v = Vector3.ZERO
+		_serve_fb_from = Vector3(INF, INF, INF)
+		_serve_fb_aim = Vector2(INF, INF)
+		_serve_fb_flight = -1.0
+		_serve_fb_v = Vector3.ZERO
 		# 新的一发：丢掉上一发的解算缓存（参数可能已经不同了）
 		_invalidate_serve_solution()
 		if _partner_serving():
@@ -2807,6 +2885,63 @@ func _serve_solution_for_release(from: Vector3, plan: Dictionary) -> Dictionary:
 	return _solve_serve_cached(from, plan)
 
 
+## 解算器找不到合法解时用的**兜底速度**：直落瞄准点，只保「能过网」。
+##
+## ★★ 预览与出手**必须**共用这一处（2026-10-06）。
+##   原来这段代码只写在 `_player_serve` 里，预览遇到 ok=false 就把环整块藏掉
+##   —— 玩家看到一片空白，球却照样飞出去。用户报的
+##   「发球落点与黄色预览框不一样 / 下台时框也要在台下」就是从这儿来的。
+##
+## ★ 结果按 (出手点, 瞄准点, 飞行时间) 缓存，且重算门槛比解算缓存粗
+##   （serve_fallback_aim_eps）：`_solve_serve` 是同步全搜，转视角时每帧换键
+##   会把帧率打穿。缓存略旧无害 —— 出手照搬的是 `_serve_draw_v`，
+##   球永远落在框里。
+func _serve_fallback_velocity(from: Vector3, plan: Dictionary) -> Vector3:
+	var aim := Vector2(float(plan.get("opp_x", 0.0)), float(plan.get("opp_z", 0.0)))
+	var flight := float(plan.get("flight_eff", plan.get("flight", _flight_time())))
+	var hit := not _serve_fb_v.is_zero_approx() \
+		and _serve_fb_from.distance_to(from) <= serve_fallback_aim_eps \
+		and _serve_fb_aim.distance_to(aim) <= serve_fallback_aim_eps \
+		and absf(_serve_fb_flight - flight) <= 0.02
+	if hit:
+		return _serve_fb_v
+	var target := Vector3(float(plan.get("opp_x", 0.0)),
+						  table_height + 0.02, float(plan.get("opp_z", -0.7)))
+	var v := _solve_serve(from, target, flight)
+	v = _cap_serve_speed(from, v)
+	_serve_fb_from = from
+	_serve_fb_aim = aim
+	_serve_fb_flight = flight
+	_serve_fb_v = v
+	return v
+
+
+## 「这一发现在会飞出去的速度」—— 预览画框和真正出手都走这里，只有一处。
+##
+## ① 解算器有合法解 → 用它（已发布的那一份，可能是任务中途的最优候选）
+## ② 没有 → 兜底直落球（`_serve_fallback_velocity`）
+## 返回 ZERO = 两份都拿不到（球还没准备好），调用方自己决定怎么办。
+func _serve_effective_velocity(from: Vector3, plan: Dictionary) -> Vector3:
+	if not _serve_sol_res.is_empty() and bool(_serve_sol_res.get("ok", false)):
+		return _serve_sol_res["v"]
+	return _serve_fallback_velocity(from, plan)
+
+
+## 出手时「照搬预览框」的那一份速度。
+##
+## ★★ 这是「发球落点 == 黄色预览框」的硬保证：返回的非零值**就是**画环用的那一个
+##   速度，不重新解、不重读瞄准点。详见 `_serve_draw_v` 的说明。
+##
+## ★ 出手点对不上（玩家在这一帧里挪了步、预览还没补画）时返回 ZERO：
+##   那份速度是按旧出手点解的，照搬等于让弹道整体平移 —— 宁可退回重解。
+func _serve_drawn_velocity(from: Vector3) -> Vector3:
+	if _serve_draw_v.is_zero_approx():
+		return Vector3.ZERO
+	if _serve_draw_from.distance_to(from) > serve_preview_from_eps:
+		return Vector3.ZERO
+	return _serve_draw_v
+
+
 ## 丢掉发球解算缓存 —— 换一发 / 改了发球参数时调，避免复用旧参数下的解。
 ## ★ 连**任务**一起丢掉：一个还在跑的旧任务会把旧参数下的解发布回来。
 ## ★ 但**不清提示候选**：那只是「从哪个候选开始试」的出发位置，
@@ -2937,16 +3072,22 @@ func _update_serve_traj(delta: float) -> void:
 	_serve_draw_aim = aim_now
 	_serve_draw_from = from
 	serve_preview_refreshes += 1
-	var res := _serve_sol_res
-	var v: Vector3 = res["v"] if bool(res.get("ok", false)) else Vector3.ZERO
+	# ★★ 画什么 = 「这一发真正会飞出去的速度」：有合法解就用它，没有就用兜底
+	#    直落球。两者与出手共用一个 `_serve_effective_velocity` ——
+	#    分开各写一份，就会重演「预览藏环、球照样飞」那个 bug（2026-10-06）。
+	var v := _serve_effective_velocity(from, _serve_plan)
 	if v == Vector3.ZERO:
+		_serve_draw_v = Vector3.ZERO
 		_serve_traj.visible = false
 		for r in _serve_traj_rings:
 			r.visible = false
 		return
-	var path := _sim_serve_polyline(from, v, float(_serve_plan.get("spin", 0.0)))
+	var spin_now := float(_serve_plan.get("spin", 0.0))
+	var path := _sim_serve_polyline(from, v, spin_now)
 	if path.size() < 2:
 		_serve_traj.visible = false
+		for r in _serve_traj_rings:
+			r.visible = false
 		return
 	_serve_traj_mesh.clear_surfaces()
 	_serve_traj_mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
@@ -2954,23 +3095,43 @@ func _update_serve_traj(delta: float) -> void:
 		_serve_traj_mesh.surface_add_vertex(p)
 	_serve_traj_mesh.surface_end()
 	_serve_traj.visible = true
-	# 两个落点环
-	var r2: Dictionary = b.simulate_path(from, v,
-		float(_serve_plan.get("spin", 0.0)), 2.5,
+	# ★★ 记下「框是拿哪个速度画的」—— 出手时直接照搬它，不重解。
+	#    这是「发球落点 == 黄色预览框」的唯一硬保证（见 _serve_draw_v）。
+	_serve_draw_v = v
+	# ── 顺次画每个「接触点」的环（己方第一跳 / 对方第二跳）──
+	# ★★ 必须用 `contacts`（与 events 一一对应、**含落地点**），不能用 `bounces`：
+	#    bounces 只记台面弹跳 —— 球一旦下台，环就整个不见了，
+	#    玩家看到的是「框凭空消失」，而球其实落在台下某处。
+	# ★ 高度也照接触点取（bp.y - radius = 接触面高度）：
+	#    以前把 y 写死 table_height + 0.03，球落到地上时框还飘在台面高度。
+	#    用户明确要求：「发球直接下台，黄色预览框也要在台下」。
+	# ★ 台面弹跳时 bp.y = table_height + radius，所以 bp.y - radius + 0.03
+	#    恰好还是原来的 table_height + 0.03 —— 台面上的环位置逐位不变。
+	var r2: Dictionary = b.simulate_path(from, v, spin_now, 2.5,
 		serve_solve_dt, serve_net_clearance)
-	var bl: Array = r2["bounces"]
-	for i in range(_serve_traj_rings.size()):
-		if i < bl.size():
-			_serve_traj_rings[i].visible = true
-			var bp: Vector3 = bl[i]
-			# ★ 不入树时设 global_position 会刷 `Condition "!is_inside_tree()" is true`
-			#   （离屏探针会走到这里）。父节点在原点，局部坐标等价。
-			if _serve_traj_rings[i].is_inside_tree():
-				_serve_traj_rings[i].global_position = Vector3(bp.x, table_height + 0.03, bp.z)
-			else:
-				_serve_traj_rings[i].position = Vector3(bp.x, table_height + 0.03, bp.z)
+	var evs: Array = r2.get("events", [])
+	var pts: Array = r2.get("contacts", [])
+	var rad := float(b.radius)
+	var ring_i := 0
+	for k in range(mini(evs.size(), pts.size())):
+		# 撞网不是「落点」，不给它画环 —— 画了会误导成「就要落在网那一点」。
+		if String(evs[k]) == "NET":
+			continue
+		if ring_i >= _serve_traj_rings.size():
+			break
+		var bp: Vector3 = pts[k]
+		var ring: MeshInstance3D = _serve_traj_rings[ring_i]
+		ring.visible = true
+		# ★ 不入树时设 global_position 会刷 `Condition "!is_inside_tree()" is true`
+		#   （离屏探针会走到这里）。父节点在原点，局部坐标等价。
+		var rp := Vector3(bp.x, bp.y - rad + 0.03, bp.z)
+		if ring.is_inside_tree():
+			ring.global_position = rp
 		else:
-			_serve_traj_rings[i].visible = false
+			ring.position = rp
+		ring_i += 1
+	for i in range(ring_i, _serve_traj_rings.size()):
+		_serve_traj_rings[i].visible = false
 
 
 ## 采样整条弹道（含反弹）成折线点列，供轨迹提示线使用。
@@ -3038,9 +3199,7 @@ func _player_serve(from_override: Vector3 = Vector3.ZERO) -> void:
 		return
 	_tossing = false
 
-	# ★ 先把发球计划准备好 —— 出手点的横向位置要从计划里读（from_x），
-	#   而预览线用的也是它。以前两边各掷一个随机数，玩家看到的提示线
-	#   画的是一条**根本不会发生**的弹道。
+	# ★ 先把发球计划准备好 —— 轨迹提示线画的和出手用的是同一份。
 	if _serve_plan.is_empty():
 		_serve_plan = _plan_serve(1)
 
@@ -3050,12 +3209,20 @@ func _player_serve(from_override: Vector3 = Vector3.ZERO) -> void:
 		# 不再自己算一遍 pz / 也不读计划里的 from_x —— 那正是两边对不上的源头。
 		from = _serve_launch_point()
 
+	# ★★ 出手速度 = **预览框画的那一个**（`_serve_draw_v`）。
+	#    「发球落点 == 黄色预览框」由此变成构造性事实：框画的就是它，
+	#    不重解、也不重读瞄准点 —— 没有「理论上一致、实际差一点」的余地。
+	#    ★ 原来这里是「出手那一刻再取一次瞄准点 + 再解一次」，解出来的是玩家
+	#      **现在**瞄的那个点，而框里画的是上一拍解出来的那个点。玩家一边转
+	#      视角 / 挪步一边按左键，两者必然分家 —— 这就是用户第二轮反馈的
+	#      「发球落点与黄色预览框还没符合」。
+	#    ★ 也因此**不再重读瞄准点**：读了会让 plan 里的落点与 `_serve_draw_v`
+	#      对应的落点分家，日志里的「球速 / 短球提示」都会自相矛盾。
+	var v := _serve_drawn_velocity(from)
+
 	# ★ 发球也能蓄力 —— 用户报的「发球无法蓄力」。
 	#   根因：_serve_grip 走的是「切握拍 + 挥一下 + 直接发出去」这条独立路径，
 	#   从头到尾没读过 _charge_t / _charging，所以按住空格对发球毫无作用。
-	# ★ 出手这一刻再取一次瞄准点：预览是十几次每秒的，可能在玩家刚转完视角
-	#   和真正出手之间差了一点，拿旧值会打偏一点点。
-	_apply_serve_aim(_serve_plan)
 	# ★ 自旋不在这里重掷 —— _plan_serve 已经掷过一次，预览用的就是那个值。
 	#   （重掷的话预览线和实际球路的侧拐不是同一条，而且会让解算缓存永久失效。）
 
@@ -3067,29 +3234,22 @@ func _player_serve(from_override: Vector3 = Vector3.ZERO) -> void:
 	# ★ 合规发球：先弹己方半台 → 过网 → 再弹对方半台（用户报的「要先弹自己的桌面」）。
 	var plan := _serve_plan.duplicate()
 	_apply_serve_charge_to_plan(plan)
-	var flight := float(plan.get("flight_eff", plan.get("flight", _flight_time())))
-	plan["flight"] = flight
+	plan["flight"] = float(plan.get("flight_eff", plan.get("flight", _flight_time())))
 	# 只为文案：公式与上面同一处（_quantized_charge_power）。
 	var power := float(_quantized_charge_power())
-	# ★★ 出手**不再跑搜索** —— 直接用预览已经发布的那一份解。
-	#    预览从进发球态起每帧都在推进解算任务、并且第一帧就发布了一次，
-	#    所以这里几乎总能拿到一份**合法**解（哪怕任务还没跑完，
-	#    已发布的也是「目前找到的最接近瞄准点的合法候选」）。
-	#    「发球的时候非常卡」里的那一下，就是出手瞬间那次全量搜索 —— 现在没了。
-	#    ★ 精度代价可忽略：预览解与当前瞄准点最多差
-	#      serve_preview_aim_eps + 转视角一拍的位移，而候选自身的容忍半径
-	#      serve_legal_accept_dist(0.32 m) 远大于它。
-	#    ★ 只有「刚进发球态、一次预览都还没跑到」才真跑一次同步搜索兜底。
-	var res := _serve_solution_for_release(from, plan)
-	var v: Vector3
-	if bool(res["ok"]):
-		v = res["v"]
-	else:
-		# 兜底：旧的「直落对方台」轨迹（宁可略不合规，也不能让球撞网卡住球局）
-		var target := Vector3(float(_serve_plan.get("opp_x", 0.0)),
-							  table_height + 0.02, float(_serve_plan.get("opp_z", -0.7)))
-		v = _solve_serve(from, target, flight)
-		v = _cap_serve_speed(from, v)
+
+	if v == Vector3.ZERO:
+		# 没有预览框可照搬（刚进发球态一帧都还没画 / 关掉了提示线 /
+		# 探针直接调 _player_serve）—— 这时才现取瞄准点走解算那条老路。
+		_apply_serve_aim(_serve_plan)
+		plan = _serve_plan.duplicate()
+		_apply_serve_charge_to_plan(plan)
+		plan["flight"] = float(plan.get("flight_eff", plan.get("flight", _flight_time())))
+		# ★ 有合法解用它；没有就兜底直落球 —— 与预览共用
+		#   `_serve_fallback_velocity`，所以「预览画什么」和「球怎么飞」永远同源。
+		var res := _serve_solution_for_release(from, plan)
+		v = res["v"] if bool(res.get("ok", false)) \
+			else _serve_fallback_velocity(from, plan)
 
 	_reset_rally_state()
 	# ★ 用**解算时那一份**自旋，不要在这里重掷：解算器是拿 plan["spin"] 算出
@@ -4085,6 +4245,35 @@ func _opponent_swing(contact_x: float) -> void:
 		_opponent.call("trigger_swing")
 
 
+## 一次扣杀的体力代价 —— 用户要的「对方扣杀要扣体力」（扣的是 AI 自己的）。
+##
+## ★ 抽成独立函数是为了能被探针直接验：`_do_opponent_return` 要一颗真的球 +
+##   一次解算才能驱动，离线很难摆；而这里要守的不变量只有
+##   「扣谁 / 扣多少 / 钳位 / 能关掉」四件事，全是纯数值。
+##
+## ★ 当场扣、不等回合结束：`_opp_stamina` 一掉，同一回合里他**后面的球**
+##   就立刻带上更多疲劳（`_opponent_miss_chance` / `_opponent_return_flight_scale`
+##   / `_opp_fatigue_reach_scale`），HUD 上那条红色体力条也当着玩家的面掉一截
+##   —— 玩家才知道「引诱他扣杀」真的在起作用，而不是打完一球才后知后觉。
+##
+## 返回实际扣掉的量（钳位之后的真值），诊断 / 探针用。
+func _charge_opponent_smash_stamina() -> float:
+	var before := _opp_stamina
+	_opp_stamina = maxf(0.0, _opp_stamina - maxf(opponent_smash_cost, 0.0))
+	# ★ clamp 上界也要有：探针 / 调试器可能把 cost 设成负数，别让它变成回血。
+	_opp_stamina = clampf(_opp_stamina, 0.0, opponent_max_stamina)
+	return before - _opp_stamina
+
+
+## AI 的体力 → 够球横向半径倍率。满体力 1.0，空体力 `opponent_fatigue_reach_floor`。
+##
+## ★ 用户要的「体力与接球成功范围成正相关」，和玩家那条
+##   `_stamina_reach_scale()` 完全同构 —— 两边对称，长回合才真是一条战术。
+func _opp_fatigue_reach_scale() -> float:
+	var fatigue := 1.0 - clampf(_opp_stamina / maxf(opponent_max_stamina, 0.01), 0.0, 1.0)
+	return lerpf(1.0, clampf(opponent_fatigue_reach_floor, 0.0, 1.0), fatigue)
+
+
 ## 对手各难度的失误率
 func _opponent_miss_chance() -> float:
 	var base := tune("opponent_miss")
@@ -4149,9 +4338,20 @@ func _schedule_opponent_return(pos: Vector3) -> void:
 	# 玩家把球打到边线大角，对手是**因为跑不到**才没接住，而不是运气。
 	# ★ 接发球那一拍放宽（opp_serve_reach_bonus）：玩家的瞄准范围比对手的
 	#   够球半径大，两端有一条「瞄哪儿就白送分」的死角，见那条参数的注释。
+	# ★★ 用户要的「体力与接球成功范围成正相关」：AI 累了，够球半径跟着缩
+	#    （`_opp_fatigue_reach_scale`）—— 原来疲劳只体现在「失误率」这个
+	#    概率上，玩家看不见摸不着；现在它变成一个**几何事实**：
+	#    把他磨到见底，边线那一条带就真的够不着了。
+	#    ★★ 但**接发球那一拍绝不缩**：这会破掉「接发球够球半径必须大于
+	#       发球瞄准跨度」这条不变量 ——
+	#       0.66 × 0.70 × 1.25 = 0.578 m < 发球瞄准跨度 ±0.724 m，
+	#       于是「对手见底时专挑边线发球」变成白拿分，发球偷分的口子又开了。
+	#       见 opp_serve_reach_bonus 的注释（那里钉的是同一条不等式）。
 	var reach_x := opponent_reach_x
 	if _serve_phase:
 		reach_x *= opp_serve_reach_bonus
+	else:
+		reach_x *= _opp_fatigue_reach_scale()
 	var too_wide := absf(pos.x) > reach_x
 	_opp_will_hit = (not too_wide) and randf() >= _opponent_miss_chance()
 	_opp_will_out = _opp_will_hit and randf() < _opponent_out_chance()
@@ -4289,6 +4489,7 @@ func _do_opponent_return() -> void:
 		_opp_smash = randf() < opp_smash_chance_at(from.y, _opp_contact_spin)
 	if _opp_smash:
 		_opp_smashes += 1
+		_charge_opponent_smash_stamina()
 
 	if _doubles:
 		_set_active_opponent(_opp_turn)

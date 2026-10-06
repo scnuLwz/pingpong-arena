@@ -15,6 +15,8 @@
 ##   E~K. 难度微调端到端 / 凶度反馈与 HUD / 球拍不穿台面 / 先落台才能击球 /
 ##        发球预览开销不变量 / 旋球折扣 + 快球反馈（分组说明见 run_regression.sh）。
 ##   L. 赛后评价称号（`match_title()` 纯函数）+ 任务一键领取（会写盘）。
+##   M. 发球预览 == 真实落点（出手照搬画框速度 + 下台时环落到地面）。
+##   N. 体力耦合（扣杀扣 AI 自己体力 + 体力⇄够球范围正相关 + 接发球不变量）。
 ##
 ## 用法：Godot --headless --path . tests/regression_probe.tscn -- <组名>
 ##   组名省略 = 全跑。不入树（避免 autoload 写真实存档），见 PITFALLS.md 坑 #3。
@@ -101,7 +103,7 @@ func _run() -> void:
 	_snapshot_profile()
 	var groups: PackedStringArray = _args()
 	if groups.is_empty():
-		groups = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"]
+		groups = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"]
 	for g: String in groups:
 		match g:
 			"A": _case_difficulty_tiers()
@@ -116,6 +118,8 @@ func _run() -> void:
 			"J": _case_serve_preview_cost()
 			"K": await _case_spin_and_speed()
 			"L": _case_match_title_and_claim()
+			"M": _case_serve_preview_truth()
+			"N": _case_stamina_coupling()
 			_: _fail("未知组名 %s" % g)
 	_report()
 
@@ -1556,6 +1560,286 @@ func _fb_tag(fb: Dictionary) -> String:
 	if fb.is_empty():
 		return ""
 	return String(fb["tag"])
+
+
+## ───────────── M 发球预览 == 真实落点（2026-10-06 第二轮）─────────────
+##
+## 用户报了**两次**「发球落点与黄色预览框不一样」。第二轮定位到三条根因：
+##   ① 出手那一刻**重读瞄准点 + 重解一次** —— 解出来的是玩家「现在」瞄的点，
+##      而框里画的是上一拍解出来的点。转视角 / 挪步时两者必然分家；
+##   ② 解算器找不到合法解时，预览把环**整块藏掉**，球却照样飞兜底弹道；
+##   ③ 环的 y 写死 `table_height + 0.03`，而且定位用的是 `bounces`
+##      （只记台面弹跳）—— 球一「下台」，第二跳的环既不出现、也没法画在台下。
+##
+## 修法三条（本组一一钉住）：
+##   · 出手直接照搬「画框用的那个速度」（`_serve_draw_v`）→ 所见即所得；
+##   · 预览与出手共用 `_serve_effective_velocity` / `_serve_fallback_velocity`
+##     一处 → 不再出现「预览藏、球照飞」；
+##   · 环按 `contacts`（与 events 一一对应、**含落地点**）定位，高度取接触面
+##     → 下台时环跟着落到地面。
+func _case_serve_preview_truth() -> void:
+	var g: Node3D = (load(GAME_SCRIPT) as GDScript).new() as Node3D
+	if g == null:
+		_fail("实例化 pingpong_game.gd 失败")
+		return
+	var plain: PingPongBall = (load(BALL_SCRIPT) as GDScript).new() as PingPongBall
+	if plain == null:
+		_fail("实例化 pingpong_ball.gd 失败")
+		return
+	var ball: PingPongBall = (load(BALL_SCRIPT) as GDScript).new() as PingPongBall
+	g.set("_ball", ball)
+	var rad := float(plain.radius)
+	var top := TABLE_TOP_Y + rad            # 台面接触高度（球心）
+	var clearance := float(g.get("serve_net_clearance"))
+	var dt := float(g.get("serve_solve_dt"))
+
+	# ── M1 contacts 与 events 一一对应，且**落地点在台下** ──
+	#   直上直下掉在 z=1.6（在台端线 1.37 之外）→ 只该有一个 FLOOR 事件。
+	var down := plain.simulate_path(Vector3(0.0, 1.05, 1.6),
+									Vector3(0.0, -6.0, 0.0), 0.0, 2.5, dt)
+	var ev_d: Array = down["events"]
+	var ct_d: Array = down["contacts"]
+	_eqf("M1a 自由落体只报一个事件", float(ev_d.size()), 1.0)
+	_eqs("M1b 它是 FLOOR（下台）", String(ev_d[0]) if ev_d.size() > 0 else "?", "FLOOR")
+	_eqf("M1c contacts 与 events 一一对应", float(ct_d.size()), float(ev_d.size()))
+	_eqf("M1d ★ 落地点高度 = 球半径（就是『台下』那条地面）, 不是台面高度",
+		float((ct_d[0] as Vector3).y), rad)
+	_eqf("M1e 落地点 z 仍是出手点的 z（没被台面判据截走）",
+		float((ct_d[0] as Vector3).z), 1.6)
+	_eqf("M1f ★ 下台时 bounces 里没有东西 —— 这正是旧代码环会整块消失的原因",
+		float((down["bounces"] as Array).size()), 0.0)
+
+	# ── M2 合法发球：两个环都该贴在台面上 ──
+	var from := Vector3(0.0, 1.05, 1.6)
+	var plan: Dictionary = g.call("_plan_serve", 1)
+	plan["opp_x"] = 0.0
+	plan["opp_z"] = -0.75
+	var spin := float(plan.get("spin", 0.0))
+	var res: Dictionary = g.call("_solve_legal_serve", from, plan)
+	_eqb("M2a 前置：解出一条合法发球", bool(res.get("ok", false)), true)
+	var r2 := plain.simulate_path(from, res["v"], spin, 2.5, dt, clearance)
+	_eqf("M2b contacts 与 events 一一对应（合法发球）",
+		float((r2["contacts"] as Array).size()), float((r2["events"] as Array).size()))
+	_eqf("M2c 第一跳接触高度 = 台面 + 球半径", _contact_y(r2, 0), top)
+	_eqf("M2d 第二跳接触高度 = 台面 + 球半径（环在台上，与旧行为逐位相同）",
+		_contact_y(r2, 1), top)
+
+	# ── M3 ★ 出手照搬「画框那一份速度」──
+	g.set("serve_aim_enabled", false)
+	g.set("_server", HITTER_PLAYER)
+	g.set("_state", STATE_SERVE_DELAY)
+	g.set("_match_over", false)
+	g.set("_par_serve_t", -1.0)
+	g.set("show_serve_trajectory", true)
+	g.call("_build_serve_traj")
+	g.set("_serve_plan", plan)
+	var f := 1.0 / 60.0
+	for _i in 90:
+		g.call("_update_serve_traj", f)
+	var drawn: Vector3 = g.get("_serve_draw_v")
+	_eqb("M3a ★ 预览确实画出来了（_serve_draw_v 非零）", drawn != Vector3.ZERO, true)
+	var sol: Dictionary = g.get("_serve_sol_res")
+	var sol_v: Vector3 = sol["v"] if bool(sol.get("ok", false)) else Vector3.ZERO
+	_eqb("M3b ★ 画框用的速度 == 已发布的那一份解（不再各算各的）", drawn == sol_v, true)
+	var lpk: Vector3 = g.call("_serve_launch_point")
+	_eqb("M3c 照搬接口：出手点没变时原样返回画框速度",
+		(g.call("_serve_drawn_velocity", lpk) as Vector3) == drawn, true)
+	_eqb("M3d ★ 出手点一变就拒绝照搬（宁可重解，也不让整条弹道平移）",
+		(g.call("_serve_drawn_velocity", lpk + Vector3(0.0, 0.0, 0.06)) as Vector3) == Vector3.ZERO,
+		true)
+	g.set("_serve_draw_v", Vector3.ZERO)
+	_eqb("M3e 没有画过时返回 ZERO（调用方会退回解算那条老路）",
+		(g.call("_serve_drawn_velocity", lpk) as Vector3) == Vector3.ZERO, true)
+
+	# ── M4 ★★ 环的位置 == 画框速度的实际落点（逐位）──
+	#   这是整条需求的**核心不变量**：球是用 `_serve_draw_v` 发射的
+	#   （M6 验），而环的位置必须正好是这条速度的接触点。
+	for _i in 90:
+		g.call("_update_serve_traj", f)
+	drawn = g.get("_serve_draw_v")
+	var rinfo := plain.simulate_path(lpk, drawn, spin, 2.5, dt, clearance)
+	var rings: Array = g.get("_serve_traj_rings")
+	_eqf("M4a 两个环都在（合法发球）",
+		float(_visible_ring_count(rings)), 2.0)
+	_eqb("M4b ★★ 第一跳环位置 == 该速度的实际第一跳接触点（逐位）",
+		(rings[0] as Node3D).position.distance_to(_ring_pos_from(rinfo, 0, rad)) < 0.0005, true)
+	_eqb("M4c ★★ 黄色环位置 == 该速度的实际第二跳接触点（逐位）",
+		(rings[1] as Node3D).position.distance_to(_ring_pos_from(rinfo, 1, rad)) < 0.0005, true)
+
+	# ── M5 ★ 解算器找不到合法解时，预览也必须画（而且要画在台下）──
+	#   复现手法：把 serve_legal_attempts 设成 0 → 解算任务一个候选都试不了，
+	#   `_publish_serve_job` 因此永不发布 → `_serve_sol_res` 只能停在 ok=false。
+	g.call("_invalidate_serve_solution")
+	g.set("serve_legal_attempts", 0)
+	g.set("_serve_sol_res", {"ok": false, "v": Vector3.ZERO})
+	g.set("_serve_draw_v", Vector3.ZERO)
+	for _i in 150:
+		g.call("_update_serve_traj", f)
+	var d2: Vector3 = g.get("_serve_draw_v")
+	_eqb("M5a ★ 解不出合法解时预览照样画（旧代码这里环整块消失、球却在飞）",
+		d2 != Vector3.ZERO, true)
+	var fb: Vector3 = g.call("_serve_fallback_velocity", lpk, g.get("_serve_plan"))
+	_eqb("M5b 画的就是兜底直落球那一条（预览与出手共用同一个函数）", d2 == fb, true)
+	var rf := plain.simulate_path(lpk, d2, spin, 2.5, dt, clearance)
+	var last_i := 1
+	_eqb("M5c 兜底弹道确实没弹到第二跳（第二跳落在地上）",
+		_string_at(rf["events"], 1) == "FLOOR", true)
+	_eqb("M5d ★★ 此时黄色环落在地面高度（在台下），不是台面高度",
+		(rings[1] as Node3D).position.y < TABLE_TOP_Y, true)
+	_eqb("M5e 而且它的 x / z 就是落地点的 x / z",
+		Vector2((rings[1] as Node3D).position.x, (rings[1] as Node3D).position.z)
+			.distance_to(Vector2(_contact_at(rf, last_i).x, _contact_at(rf, last_i).z)) < 0.0005,
+		true)
+	g.set("serve_legal_attempts", 200)
+
+	# ── M6 ★★ 真正出手时用的就是画框那一个速度 ──
+	g.call("_invalidate_serve_solution")
+	g.set("_serve_draw_v", Vector3.ZERO)
+	for _i in 90:
+		g.call("_update_serve_traj", f)
+	var v6: Vector3 = g.get("_serve_draw_v")
+	ball.stop()
+	g.call("_player_serve")
+	_eqb("M6a ★★ 球带出去的初速 == 画框那一个（逐位相同，这就是『落点 == 框』）",
+		ball.velocity == v6, true)
+	_eqb("M6b 确实进了飞行态（不是被别的分支拦下了）", ball.is_flying(), true)
+
+
+## ───────────── N 体力耦合（2026-10-06 第三轮）─────────────
+##
+## 用户两条需求：
+##   ① 「对方扣杀要扣体力」—— 确认过：扣 **AI 自己**的；
+##   ② 「体力与接球成功范围成正相关」—— 两侧都要成立。
+##
+## ① 原来扣杀对 AI 是免费的（体力只在回合结束按拍数结算一次），
+##   高难度下他越扣越猛而体力纹丝不动，「引诱扣杀磨他」无从下手。
+## ② 玩家侧本来就有（`_stamina_reach_scale`，线性 0.55~1.0），
+##   但 AI 侧只有「失误率」「回球速度」两条概率性的疲劳表现，
+##   **够球半径**是硬的（`opponent_reach_x`）—— 补上之后，
+##   「磨到他见底 → 拉开角度收割」才从概率变成几何事实。
+func _case_stamina_coupling() -> void:
+	var g: Node3D = (load(GAME_SCRIPT) as GDScript).new() as Node3D
+	if g == null:
+		_fail("实例化 pingpong_game.gd 失败")
+		return
+
+	# ── N1 扣杀扣 AI 自己的体力 ──
+	g.set("_opp_stamina", 100.0)
+	_eqf("N1a 满体力挨一次扣杀，代价 = opponent_smash_cost",
+		float(g.call("_charge_opponent_smash_stamina")), 9.0)
+	_eqf("N1b 扣完剩 91", float(g.get("_opp_stamina")), 91.0)
+	g.set("_opp_stamina", 5.0)
+	_eqf("N1c 只剩 5 点时只扣得掉 5", float(g.call("_charge_opponent_smash_stamina")), 5.0)
+	_eqf("N1d 体力不会变成负数", float(g.get("_opp_stamina")), 0.0)
+	g.set("opponent_smash_cost", 0.0)
+	g.set("_opp_stamina", 80.0)
+	_eqf("N1e cost=0 → 扣 0（这条机制可以关掉）",
+		float(g.call("_charge_opponent_smash_stamina")), 0.0)
+	_eqf("N1f cost=0 → 体力不动", float(g.get("_opp_stamina")), 80.0)
+	g.set("opponent_smash_cost", -40.0)
+	g.set("_opp_stamina", 80.0)
+	_eqf("N1g ★ 负数 cost 不会变成回血（调试器手滑也不怕）",
+		float(g.call("_charge_opponent_smash_stamina")), 0.0)
+	_eqf("N1h 负数 cost 时体力不变", float(g.get("_opp_stamina")), 80.0)
+	g.set("opponent_smash_cost", 9.0)
+	# 满体力时不该被上界吃掉
+	g.set("_opp_stamina", 100.0)
+	g.call("_charge_opponent_smash_stamina")
+	_eqb("N1i 满体力扣完不会超过上界（也不是回血）",
+		float(g.get("_opp_stamina")) <= 100.0 and float(g.get("_opp_stamina")) < 100.0, true)
+
+	# ── N2 ★ 体力 ⇄ 够球范围 正相关（两侧都单调不减）──
+	var prev_p := -1.0
+	var prev_o := -1.0
+	var mono_p := true
+	var mono_o := true
+	for i in range(21):
+		var s := float(i) * 5.0
+		g.set("_stamina", s)
+		var rp := float(g.call("_stamina_reach_scale"))
+		if rp < prev_p - 1e-6:
+			mono_p = false
+		prev_p = rp
+		g.set("_opp_stamina", s)
+		var ro := float(g.call("_opp_fatigue_reach_scale"))
+		if ro < prev_o - 1e-6:
+			mono_o = false
+		prev_o = ro
+	_eqb("N2a ★ 玩家：体力越高够球范围越大（0~满体力扫 21 点，单调不减）", mono_p, true)
+	_eqb("N2b ★ AI：体力越高够球范围越大（同上）", mono_o, true)
+	g.set("_stamina", 100.0)
+	_eqf("N2c 满体力：玩家范围倍率 = 1.0", float(g.call("_stamina_reach_scale")), 1.0)
+	g.set("_stamina", 0.0)
+	_eqf("N2d 空体力：玩家范围倍率 = stamina_reach_floor（用户定稿 0.55）",
+		float(g.call("_stamina_reach_scale")), 0.55)
+	g.set("_opp_stamina", 100.0)
+	_eqf("N2e 满体力：AI 范围倍率 = 1.0", float(g.call("_opp_fatigue_reach_scale")), 1.0)
+	g.set("_opp_stamina", 0.0)
+	_eqf("N2f 空体力：AI 范围倍率 = opponent_fatigue_reach_floor（定稿 0.70）",
+		float(g.call("_opp_fatigue_reach_scale")), 0.70)
+	# 线性：半管体力 = 两端的中点
+	g.set("_opp_stamina", 50.0)
+	_eqf("N2g AI 这条是线性的（半管体力 = 两端中点）",
+		float(g.call("_opp_fatigue_reach_scale")), 0.85)
+	g.set("_stamina", 50.0)
+	_eqf("N2h 玩家那条也是线性的", float(g.call("_stamina_reach_scale")), 0.775)
+
+	# ── N3 ★★ 不变量：接发球够球半径 > 发球瞄准跨度（疲劳不得破这条）──
+	#   横向死角不等式，见 opp_serve_reach_bonus 的注释。
+	var reach := float(g.get("opponent_reach_x"))
+	var bonus := float(g.get("opp_serve_reach_bonus"))
+	var floor_ai := float(g.get("opponent_fatigue_reach_floor"))
+	var aim_span := TABLE_HALF_X * float(g.get("serve_aim_x_span"))
+	_eqb("N3a ★ 接发球那一拍**不缩**半径 → 不变量成立（发球偷不了分）",
+		reach * bonus > aim_span, true)
+	_eqb("N3b 若疲劳也缩接发球，这个乘积会小于瞄准跨度 —— 这就是不能缩的理由",
+		reach * floor_ai * bonus < aim_span, true)
+	# ★ 回合中疲劳确实缩半径，而且缩出来的「收割窗口」是可量化的：
+	#   半台半宽 0.7625，满体力够到 86.6% 宽、见底只剩 60.6% ——
+	#   外圈那 26 个百分点（|x| ∈ (0.46, 0.66]）从「够得到」变成「够不到」。
+	_eqb("N3c 回合中疲劳确实缩小够球带（满体力 0.66 → 见底 0.462）",
+		reach * floor_ai < reach and absf(reach * floor_ai - 0.462) < 0.0005, true)
+	_eqb("N3d ★ 收割窗口是几何事实：满体力够到半台 86.6% 宽，见底只剩 60.6%",
+		absf(reach / TABLE_HALF_X - 0.8656) < 0.002
+			and absf(reach * floor_ai / TABLE_HALF_X - 0.6059) < 0.002, true)
+
+
+## 取 `simulate_path` 结果里第 idx 个接触点（跳过撞网）的 y。
+func _contact_y(r: Dictionary, idx: int) -> float:
+	return _contact_at(r, idx).y
+
+
+## 取 `simulate_path` 结果里第 idx 个「非撞网」接触点。
+func _contact_at(r: Dictionary, idx: int) -> Vector3:
+	var evs: Array = r.get("events", [])
+	var pts: Array = r.get("contacts", [])
+	var n := 0
+	for k in range(mini(evs.size(), pts.size())):
+		if String(evs[k]) == "NET":
+			continue
+		if n == idx:
+			return pts[k]
+		n += 1
+	return Vector3(INF, INF, INF)
+
+
+## 「第 idx 个环应该在哪」—— 与 pingpong_game._update_serve_traj 的画法
+## **逐位相同**：接触点 y 减去球半径（= 接触面高度）再抬 3 cm。
+func _ring_pos_from(r: Dictionary, idx: int, rad: float) -> Vector3:
+	var cp := _contact_at(r, idx)
+	return Vector3(cp.x, cp.y - rad + 0.03, cp.z)
+
+
+func _visible_ring_count(rings: Array) -> int:
+	var n := 0
+	for m in rings:
+		if (m as Node3D).visible:
+			n += 1
+	return n
+
+
+func _string_at(a: Array, i: int) -> String:
+	return String(a[i]) if i < a.size() else "?"
 
 
 func _eqb(name: String, got: bool, want: bool) -> void:
