@@ -48,8 +48,14 @@ if 'renderer/rendering_method' not in s:
 s = re.sub(r'^MCPRuntimeProbe=.*\r?\n', '', s, flags=re.M)
 s = s.replace('enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")',
               'enabled=PackedStringArray()')
+# 3D MSAA 改成 0 —— 网页版按「性能优先」。
+#   Godot 4.3 起（PR #83976）Compatibility 渲染器**也**支持 3D MSAA 了，
+#   所以项目里为桌面版开的 4× 会实打实落到网页版上，而网页版本来就是
+#   single-threaded wasm，再叠 MSAA 只会更卡。桌面版仍走项目里的 4×。
+s = re.sub(r'^anti_aliasing/quality/msaa_3d=\d+$',
+           'anti_aliasing/quality/msaa_3d=0', s, flags=re.M)
 io.open(p, 'w', encoding='utf-8', newline='\n').write(s)
-print('已切换 GodotPhysics3D + gl_compatibility，并移除 MCPRuntimeProbe autoload')
+print('已切换 GodotPhysics3D + gl_compatibility，移除 MCPRuntimeProbe autoload，并关掉 3D MSAA')
 PY
 
 # 不删目录：目录里已有 50+ 文件，一次性删除会触发批量删除确认；导出本来就会覆盖 index.*

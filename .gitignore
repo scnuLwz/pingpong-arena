@@ -11,3 +11,6 @@ models/_raw/
 # 构建产物与本机状态
 export_presets.cfg.bak
 *.tmp
+# 导出脚本用的 project.godot 临时备份（build_web2.sh / build_desktop.sh）
+project.godot.webbak
+project.godot.deskbak
