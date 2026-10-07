@@ -1,9 +1,9 @@
 # 乒乓竞技场（PingPong Arena）
 
-> **⬇ [下载 Windows 版 · 77.2 MB · 免安装](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena-win64.zip)**
+> **⬇ [下载 Windows 版 · 51.7 MB · 免安装](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena-win64.zip)**
 > —— 解压后双击 `pingpong-arena.exe` 即玩。
 >
-> **🎮 [不想下载？直接在浏览器里玩](https://fp-pingpong.app.workbuddy.host/)** —— 打开就能打，画质精简过，非常卡，不建议
+> **🎮 [不想下载？直接在浏览器里玩](https://fp-pingpong.app.workbuddy.host/)** —— 打开就能打；画质比桌面版精简一档
 
 Godot 4.7.2 的第一人称乒乓球游戏。持球、对打、发球解算、AI 调度、联赛与排位、
 球拍抽卡、10 个形态各异的场馆 —— 全部由 GDScript 生成，场景零手工拖拽。
@@ -14,11 +14,13 @@ Godot 4.7.2 的第一人称乒乓球游戏。持球、对打、发球解算、AI
 
 | 文件 | 大小 | 说明 |
 |---|---|---|
-| **[pingpong-arena-win64.zip](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena-win64.zip)** | 77.2 MB | **推荐** —— 解压后双击 `pingpong-arena.exe` |
-| [pingpong-arena.exe](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena.exe) | 173.7 MB | 单文件，免解压，直接双击运行 |
+| **[pingpong-arena-win64.zip](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena-win64.zip)** | 51.7 MB | **推荐** —— 解压后双击 `pingpong-arena.exe` |
+| [pingpong-arena.exe](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena.exe) | 150.4 MB | 单文件，免解压，直接双击运行 |
 
-> **2026-10-06 更新**：修掉了旧版本「进得了主菜单、点开始比赛没反应」的问题，
-> 请用本版本。详见 [Release 说明](https://github.com/scnuLwz/pingpong-arena/releases/latest)。
+> **2026-10-07 更新**：球台与观众模型减面（一帧三角面 −89%），安装包随之变小；
+> 网页版同步修掉了卡顿（同一份模型 + 仅 Web 生效的渲染预算），现在网页版也能正常玩。
+> **2026-10-06 更新**：修掉了旧版本「进得了主菜单、点开始比赛没反应」的问题。
+> 详见 [Release 说明](https://github.com/scnuLwz/pingpong-arena/releases/latest)。
 
 **开玩前读三条**
 
