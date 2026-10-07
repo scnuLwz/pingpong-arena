@@ -2,9 +2,6 @@
 
 > **⬇ [下载 Windows 版 · 51.7 MB · 免安装](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena-win64.zip)**
 > —— 解压后双击 `pingpong-arena.exe` 即玩。
->
-> **🎮 [不想下载？直接在浏览器里玩](https://fp-pingpong.app.workbuddy.host/)** —— 打开就能打；画质比桌面版精简一档，非常卡，还没修好
-
 Godot 4.7.2 的第一人称乒乓球游戏。持球、对打、发球解算、AI 调度、联赛与排位、
 球拍抽卡、10 个形态各异的场馆 —— 全部由 GDScript 生成，场景零手工拖拽。
 
