@@ -20,7 +20,7 @@ Godot 4.7.2 的第一人称乒乓球游戏。持球、对打、发球解算、AI
 > 详见 [Release 说明](https://github.com/scnuLwz/pingpong-arena/releases/latest)。
 
 **开玩前读三条**
-
+0.win11需要先关闭只能应用控制
 1. **首次运行会弹 SmartScreen 蓝框** —— 未签名程序的通病，不是病毒：
    点「**更多信息**」→「**仍要运行**」。
 2. **必须用电脑**：键盘 + 鼠标操作，手机玩不了。
