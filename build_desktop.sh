@@ -2,9 +2,8 @@
 # 把 cs-1 导出成 Windows 原生 exe（给别人下载了直接玩）。
 #
 # 为什么需要它：
-#   1) 网页版是「single-threaded wasm + gl_compatibility」—— 为了能在浏览器里跑，
-#      线程和 Forward+ 都被拿掉了，所以卡。桌面版**不做任何降级**：
-#      Forward+ / d3d12 / Jolt 全保留，就是你本机按 F5 的那一套。
+#   1) 桌面版**不做任何降级**：Forward+ / d3d12 / Jolt 全保留，
+#      就是你本机按 F5 的那一套。
 #   2) 导出前必须临时摘掉 godot_mcp 的 MCPRuntimeProbe autoload 与插件 ——
 #      它是个编辑器插件，打进玩家包会起一个调试探针；而且只要编辑器一启动，
 #      插件就会在内存里把 autoload 加回来（改文件那一行没用），所以插件开关也要关。
@@ -12,7 +11,7 @@
 #      超出屏幕的窗口。这里在**导出副本**里改成 1600x900，不动你本机的 project.godot。
 #
 # ★ 本脚本全程只改 project.godot 的**临时副本**，结束（含异常）一定还原，
-#   并在最后核对 md5 —— 桌面版和网页版可以交替跑而不会互相污染。
+#   并在最后核对 md5。
 set -e
 
 GODOT="D:/dev/_godot_dl/Godot_v4.7.2-stable_win64_console.exe"

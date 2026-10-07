@@ -128,14 +128,8 @@ func _build() -> void:
 	_add_menu_button("关于 · 开发者信息", false, func() -> void: _open("about"))
 
 	# ── 退出游戏 ──
-	# ★ 只在桌面端给：Web 版跑在浏览器标签页里，没有「退出程序」这回事，
-	#   留一个点了没反应的按钮比不给更糟。用 feature tag 判断而不是 DisplayServer
-	#   —— Web 导出里 OS.has_feature("web") 恒为真，其余平台为假。
-	# ★ spacer 也放进同一个 if：否则 Web 端按钮列末尾会多出一段空隙，
-	#   而 Web 上这一段后面什么都没有。
-	if not OS.has_feature("web"):
-		_btn_column.add_child(UiKit.spacer(22))
-		_add_menu_button("退出游戏", false, _quit_game)
+	_btn_column.add_child(UiKit.spacer(22))
+	_add_menu_button("退出游戏", false, _quit_game)
 
 	left.add_child(UiKit.spacer())
 	var tip := UiKit.para("按住空格蓄力，再按左键/右键打出反手暴拧 / 正手爆冲。"
@@ -309,7 +303,7 @@ func _add_menu_button(text: String, primary: bool, cb: Callable) -> Button:
 	return b
 
 
-## 退出游戏（桌面端，见 _build 里 Web 端不建这个按钮）。
+## 退出游戏。
 ##
 ## ★ 为什么退出前补一次存档：金币 / 战绩 / 任务进度平时靠 profile 自动落盘，
 ##   但玩家点「退出」的时机是任意的，完全可能刚好在一次得分之后、写盘之前。
@@ -863,8 +857,7 @@ func _panel_settings() -> Control:
 	v.add_child(UiKit.look_controls())
 
 	# ── 全屏 ──
-	# 桌面端也可以直接按 F11 / Alt+Enter，但按钮是**唯一对 Web 也有效**的入口：
-	# 浏览器只认真实用户手势，脚本自发请求全屏一律被拒。
+	# 除了这个按钮，桌面端也可以直接按 F11 / Alt+Enter 切换全屏。
 	v.add_child(UiKit.hline())
 	var fs_row := UiKit.hbox(12)
 	fs_row.add_child(UiKit.label("显示", 18, UiKit.TEXT))

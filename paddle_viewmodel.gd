@@ -27,7 +27,7 @@ const _GRIP_YAW: float = 20.0
 const _GRIP_ROLL: float = 35.0
 
 ## 真实球拍模型。混元3D 原始文件 82MB（150 万三角面 + 3 张 4096² 贴图），
-## 已减面到 6 万面、贴图降到 512²，压成 1.9MB —— 否则网页版 pck 会多出 80MB。
+## 已减面到 6 万面、贴图降到 512²，压成 1.9MB —— 否则 pck 会多出 80MB。
 const PADDLE_MODEL := preload("res://models/paddle_lite.glb")
 ## 拍子材质：不用模型自带的 AI 噪声贴图，改按几何分区手写着色（详见 .gdshader 里的说明）
 const PADDLE_SHADER := preload("res://paddle_rubber.gdshader")

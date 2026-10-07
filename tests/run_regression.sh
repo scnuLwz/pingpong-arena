@@ -28,6 +28,9 @@
 #   用户组 ID（实测本机 GROUPS=197121）—— 直接用这个名字会跑成
 #   「未知组名 197121」。
 GODOT="D:/dev/Godot_v4.7.2-stable_mono_win64/Godot_v4.7.2-stable_mono_win64_console.exe"
+# 存档核对要用它做逐键 JSON 比对（见文件末尾）。★ 路径写死而不是 `python`：
+# 这台机器的 PATH 里没有可用的 python。
+PYTHON="C:/Users/赖文钊/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE/.." || exit 1
 
@@ -82,15 +85,71 @@ for g in ${CS1_GROUPS:-A B C D E F G H I J K L M N}; do
   # 临时文件留在系统 temp 目录即可，不值得为它绕。
 done
 
-# ───────────── 存档核对（跑完必须和跑前逐字节一致）─────────────
+# ───────────── 存档核对（跑完必须和跑前一致）─────────────
+# ★★ 为什么不能只比字节：`daily_ensure()` 是**跨天幂等重置**——探针只要碰到
+#    任何会调它的代码路径（B/D 组的 reset_all 链、L 组的写盘链），就会把
+#    `daily` 块刷成今天：`day` +1、`ids` 按新日期哈希重抽、`*_today` 归零。
+#    这是**正常游戏行为**（玩家今天一开游戏也会发生同样的事），
+#    但字节比对看不出来 —— 于是每逢「跑回归那天 != 存档里记的那天」就误报，
+#    还顺手把存档**退回昨天**（等于凭空抹掉一次合法的日切）。
+#    2026-10-07 连续踩了两轮才定位：跑前后逐键比只差 `daily` 一个键，
+#    `coins`/`stats.points`/`streak` 全等，而报的是「这是 bug」。
+#
+#    判据改成**逐键语义比对**：
+#      · 只有 `daily` 一个键变、其它键全等 → 日切，**保留探针写出的新档**，只提示不失败
+#      · 出现别的键变化，或 `daily` 里 `streak`/`best`（真实进度）变了 → 真 bug，
+#        还原 + STATUS=1
+#    ★ 还原方向也反过来了：日切时**不回退**（回退才是丢数据）。
 if [ -n "$PROFILE_BAK" ]; then
   if cmp -s "$PROFILE" "$PROFILE_BAK"; then
     echo "存档核对：profile.json 与跑前一致。"
   else
-    cp "$PROFILE_BAK" "$PROFILE"
-    echo "★ 存档核对：profile.json 被探针改写过 —— 已从跑前备份还原。"
-    echo "  （这是 bug，不是正常现象。查 B / D 组里的 reset_all 调用链。）"
-    STATUS=1
+    VERDICT="$("$PYTHON" - "$PROFILE" "$PROFILE_BAK" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        cur = json.load(f)
+    with open(sys.argv[2], encoding="utf-8") as f:
+        bak = json.load(f)
+except Exception as exc:                       # noqa: BLE001
+    print("UNREADABLE\t%s" % exc)
+    raise SystemExit(0)
+
+changed = sorted(k for k in set(list(cur) + list(bak)) if cur.get(k) != bak.get(k))
+if not changed:
+    print("IDENTICAL\t")                       # 仅格式/顺序不同
+elif changed == ["daily"]:
+    # 日切必须只体现在「日期 + 任务池 + 今日计数」；连续天数与最高纪录是真实进度，
+    # 变了就说明不只是日切。
+    c, b = cur.get("daily") or {}, bak.get("daily") or {}
+    keep = [k for k in ("streak", "best") if c.get(k) != b.get(k)]
+    if keep:
+        print("REAL\t连续天数/最高纪录被改动：%s" % ",".join(keep))
+    else:
+        print("ROLLOVER\t%s -> %s" % (b.get("day"), c.get("day")))
+else:
+    print("REAL\t变动键：%s" % ",".join(changed))
+PYEOF
+)"
+    KIND="${VERDICT%%$'\t'*}"
+    DETAIL="${VERDICT#*$'\t'}"
+    case "$KIND" in
+      IDENTICAL)
+        echo "存档核对：profile.json 与跑前语义一致。"
+        ;;
+      ROLLOVER)
+        # 探针把日任务切到了今天 —— 这是玩家今天开游戏也会发生的事，
+        # 保留新档（回退反而抹掉这次合法日切），不算失败。
+        echo "存档核对：日任务跨天滚动（$DETAIL）—— 正常行为，保留探针写出的新档。"
+        ;;
+      *)
+        cp "$PROFILE_BAK" "$PROFILE"
+        echo "★ 存档核对：profile.json 被探针改坏了 —— 已从跑前备份还原。"
+        echo "  （这是 bug，不是正常现象。查 B / D 组里的 reset_all 调用链。）"
+        [ -n "$DETAIL" ] && echo "  差异：$DETAIL"
+        STATUS=1
+        ;;
+    esac
   fi
 fi
 

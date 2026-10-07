@@ -3,8 +3,14 @@ extends Node
 ##
 ## 挂载位置：pingpong.tscn 的 Audio (Node)
 ##
-## 击球 / 弹跳两套采样换成了**真实乒乓球录音**（audio/hit1~4.wav、bounce1~4.wav）；
-## 呐喊 / 欢呼也换成了**真实观众录音**（audio/cheer1~2.wav）。
+## ★ 击球 / 台面弹跳：**2026-10-07 用户要求改回程序合成的版本**
+##   （`audio/hit.wav` / `audio/bounce.wav`）。
+##   2026-10-03 曾一度换成真实乒乓球录音（hit1~4 / bounce1~4，BigSoundBank CC0），
+##   现按用户要求回退。那 8 个文件已从工程移除，但**仍在 git 历史里**——
+##   想再换回去：`git checkout <那次提交> -- audio/`。
+##   合成版瞬态更长（≈12.8 ms vs 真实录音 2.4 ms）、频谱重心更低
+##   （3834 vs 3984 Hz），听感更「闷、钝」，就是 2026-10-02「击球音重做」定稿那版。
+## 呐喊 / 欢呼是**真实观众录音**（audio/cheer1~2.wav）。
 ##
 ## ★ 得分与失分是**两种完全不同的声音**（2026-10-03 用户定）：
 ##     · 玩家得分 → `play_score_cheer()` → 真实观众**呐喊**（cheer1/cheer2 轮转）；
@@ -12,20 +18,25 @@ extends Node
 ##   这条分工是用户指定的：「失分用奶龙笑，得分呐喊」。
 ##   于是奶龙不再是「呐喊的一种」，而是**挖苦音**——对面拿分时它笑你。
 ##
-## 来源：BigSoundBank（作者 Joseph SARDIN），授权 CC0 1.0 公共领域 ——
-## 可免费商用、可自由修改、无需署名，所以 Web 版 pck 里没有版权风险。
-## 原始素材是「球在瓷砖地面上连续弹跳并逐渐静止」的 4 段 5 秒录音。
+## ★ HIT / BOUNCE / HIT_SOFT / HIT_SPIN / NET / WHOOSH / CROWD 现在**全是程序合成**的
+##   16-bit PCM WAV（22050 Hz）。
 ##
-## 仍然是程序合成素材的：HIT_SOFT（下旋搓）、HIT_SPIN（上旋拉的摩擦层）、
-## NET / WHOOSH / CROWD。
-## ★ 为什么这两个击球变体不动：它们的峰值是 -0.9 / -0.7 dBFS，配上各自的推子
-##   （hit_db-1.0 / hit_db+1.0）算出来的实际峰值 -6.4 / -4.2 dBFS，
-##   和新素材（-2.0 dBFS × hit_db）基本落在同一条线上 —— 音量关系不用重标。
-##   差别只在衰减长度：新素材是 2.7 ms 的紧促「啪」，搓球 11 ms、拉球 26 ms，
-##   正好构成「普通球干脆 / 搓球闷而长 / 拉球带摩擦」的梯度。
+## ★★ HIT / BOUNCE 是怎么找回来的（值得记住）：这两个文件 2026-10-03 被真实录音
+##   替换时，旧版被移到了 `%TEMP%/cs1_tools/attic_audio_synth/`，而那个目录
+##   后来被清掉了 —— 回收站里也没有。**唯一**的存档是工作区根目录的
+##   `sfx_preview.html`：当时为了让用户 A/B 试听，把「旧·合成」两条以 base64
+##   内联进了那个单文件页面。
+##   ★ 取回时的自证方式：同一页里的 4 条「新」素材解码后与工程内
+##     hit1~4 / bounce1~4 **逐字节相同** → 证明解码链路无损，取回的「旧」也可信。
 ##
-## 其余音效（net / whoosh / crowd）仍是程序化合成的 16-bit PCM WAV。
-## 素材出处、处理参数、重新生成的方法见 audio/CREDITS.txt。
+## ★ 推子按「合成素材」重新标定：合成版峰值 hit **-3.5** / bounce **-2.5** dBFS
+##   （真实录音是 -2.0），所以 `hit_db` 回到 **-4.0**、`bounce_db` 回到 **-9.0**
+##   —— 与 2026-10-03 换素材**之前**的标定一致。
+## ★ HIT_SOFT / HIT_SPIN 峰值 -0.9 / -0.7 dBFS，配 hit_db±1.0 得 -6.4 / -4.2 dBFS。
+##   换回合成版本后它们与 HIT 同属一个合成家族，音色梯度
+##   （普通球干脆 / 搓球闷而长 / 拉球带摩擦）反而更连贯。
+##
+## 素材出处与生成参数见 audio/CREDITS.txt。
 ##
 ## 设计要点：
 ##   1. **播放器池**：击球/弹跳会在几十毫秒内连着触发好几次，
@@ -37,30 +48,27 @@ extends Node
 ##   4. **爆冲/暴拧**不是换个音效，而是在普通击球声上再叠一层低八度的闷响，
 ##      听起来才像「发力了」而不是「换了个球拍」。
 
-## ★ 击球采样：同一支球拍的 **4 个变体**。单局里击球音要响几十次，
-##   只放一段素材的话打到第三板就听得出是复读机了 —— 见 _hit_take()。
-##   4 段各取自一段独立录音的**第 1 跳**（整段里攻击最锐的一跳），
-##   并做了 4 kHz 低通 —— 瓷砖地面反射出来的高频毛刺太重，
-##   磨掉之后才更像「胶皮吃住球」而不是「球砸在玻璃上」。
+## ★ 击球采样：改回合成版后只剩**一条**。
+##   2026-10-02 那版原本有 3 条（hit.wav / hit2 / hit3），但只有 hit.wav 被
+##   A/B 试听页留存下来，另两条随归档目录一起没了 —— 这里不重新合成、
+##   不编造素材，就放这一条真取回来的。
+##   ★ 会不会像复读机？不会明显：`play_hit()` 每次施加 ±6% 的 pitch 抖动
+##     （`randf_range(0.94, 1.06)`），相邻两拍音高最多差 12%；对一段 60 ms 的
+##     敲击声来说，这个幅度已经足够听不出重复。
 const HIT_VARIANTS := [
-	preload("res://audio/hit1.wav"),
-	preload("res://audio/hit2.wav"),
-	preload("res://audio/hit3.wav"),
-	preload("res://audio/hit4.wav"),
+	preload("res://audio/hit.wav"),
 ]
 ## 下旋/搓球：高频砍掉的闷「噗」，和上面那 4 个是两个音色，不是调个 pitch 凑的
 const HIT_SOFT := preload("res://audio/hit_soft.wav")
 ## 上旋/拉球：多一层 4~9 kHz 的摩擦「沙」，听得出是在「蹭」球
 const HIT_SPIN := preload("res://audio/hit_spin.wav")
-## ★ 台面弹跳：4 个变体，各取自对应录音的**第 2 跳**。
-##   ★ 为什么用第 2 跳而不是第 1 跳：球速已经掉了一截，撞击更软、余振更长，
-##     和「第 1 跳（已经给击球用了）」天然是两个声音。台面声只做 9 kHz 轻滤，
-##     保持清脆 —— 于是「球拍闷、台面脆」这个对比不用加任何合成音就成立。
+## ★ 台面弹跳：同样只剩一条（理由见上）。
+##   合成版的弹跳能量明显偏中低频（低/中/高 = 0.07 / 0.59 / 0.34，击球是
+##   0.20 / 0.25 / 0.55），所以「球拍脆、台面闷」的对比仍然成立。
+##   ★ `play_bounce()` 的 pitch 抖动比击球更大（`randf_range(0.92, 1.10)`，±9%），
+##     重复感更不成问题。
 const BOUNCE_VARIANTS := [
-	preload("res://audio/bounce1.wav"),
-	preload("res://audio/bounce2.wav"),
-	preload("res://audio/bounce3.wav"),
-	preload("res://audio/bounce4.wav"),
+	preload("res://audio/bounce.wav"),
 ]
 const NET := preload("res://audio/net.wav")
 const WHOOSH := preload("res://audio/whoosh.wav")
@@ -96,14 +104,13 @@ const CHEER_VARIANTS := [
 ## 挥拍的风声糊掉 —— 而击球反馈是这套音效里最要紧的一条：
 ## 玩家判断「我到底打没打到」几乎全靠它。
 ##
-## ★ 换真实录音后重标：新素材峰值 -2.0 dBFS（旧合成素材 -3.5），
-##   所以先把推子降 1.5 dB 让「峰值×音量」和原来对上；再整体抬 1 dB ——
-##   真实瞬态只持续约 3 ms（旧素材 12 ms），同样峰值下听起来更轻，
-##   这 1 dB 是补瞬态变短的响度差。净结果 -4.0 → -4.5。
-@export var hit_db: float = -4.5
-## 同上：新弹跳峰值 -2.0（旧 -2.5）→ -0.5，再 +1 dB 补瞬态。净结果 -9.0 → -8.5。
-## 于是「击球比弹跳高 4 dB」这个原有的音量关系原样保留。
-@export var bounce_db: float = -8.5
+## ★ 2026-10-07 改回合成素材后**回退到 -4.0**：合成版峰值 -3.5 dBFS
+##   （真实录音是 -2.0），那 -4.5 是为「更响的素材」补的 1.5 dB，
+##   现在素材变回原来那条，推子也跟着变回去 —— 这正是 2026-10-03 之前的标定。
+@export var hit_db: float = -4.0
+## 同上：合成弹跳峰值 -2.5（真实录音 -2.0）→ 回到 -9.0。
+## 于是「击球比弹跳高 5 dB」这个原有音量关系原样恢复。
+@export var bounce_db: float = -9.0
 @export var net_db: float = -8.0
 ## 破风声压到 -18，给击球声让路（它本来就是「没打到」的补偿音）
 @export var whoosh_db: float = -18.0
@@ -191,11 +198,9 @@ func _ready() -> void:
 	_crowd_player.stream = _looped(CROWD)
 	add_child(_crowd_player)
 
-	# 桌面端没有 autoplay 限制，直接开；Web 端等第一次按键/点击。
 	# ★ start_ambience 里已经接了玩家开关（crowd_wanted），
 	#   这里不再额外判 enable_ambience —— 那个条件在 crowd_wanted 里。
-	if not OS.has_feature("web"):
-		start_ambience()
+	start_ambience()
 
 	# 设置面板改了「背景人群声」的开关 / 音量 → 立刻生效。
 	# ★ 自己连自己的信号，而不是让 pingpong_game 记得来调 apply_settings()：

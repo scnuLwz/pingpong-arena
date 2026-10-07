@@ -456,7 +456,7 @@ func _cyl(radius: float, height: float, pos: Vector3, c: Color,
 ##
 ## 为什么要这个：结构件（栏杆立柱、围栏竖杆、桁架腹杆、楼梯踏步…）
 ## 全是「同一个形状重复很多次」。逐个 `_box()` 建的话，一个场馆
-## 轻松上千个 MeshInstance3D —— 节点遍历本身就是Web 端的开销。
+## 轻松上千个 MeshInstance3D —— 光节点遍历就够呛。
 ## 实测：合批后场馆节点从 785 降到 260 上下。
 ##
 ## rot 为空表示不旋转；要旋转就传和 centers 等长的 Basis 数组。

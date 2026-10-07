@@ -6,11 +6,11 @@
 #   Godot 的依赖追踪不会把被你排掉的资源救回来。而主菜单只用到 .scn / 字体 / 音频，
 #   比赛场景才是第一个用 3D 资源的地方，于是「主菜单正常但进不去比赛」极容易漏过。
 #   （2026-10-06 真实踩过：table_clean.res 依赖的三张贴图被一条残留通配符排除，
-#     桌面版和网页版**都**卡在「开始比赛」点不动。详见 PITFALLS.md K 节。）
+#     桌面版卡在「开始比赛」点不动。详见 PITFALLS.md K 节。）
 #
 # 用法：
 #   bash tests/verify_export.sh                          # 默认验桌面版 exe
-#   bash tests/verify_export.sh <产物路径> [场景]         # 也可验网页版 index.pck
+#   bash tests/verify_export.sh <产物路径> [场景]         # 也可以验任意 pck / exe
 #
 # 环境变量：GODOT（引擎路径）、FRAMES（跑多少帧，默认 1800 ≈ 30 s）
 #

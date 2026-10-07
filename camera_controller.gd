@@ -158,9 +158,7 @@ func _ready() -> void:
 		g.connect("settings_changed", _on_settings_changed)
 
 	# 仅在允许且窗口已聚焦时才锁定鼠标，避免启动瞬间抢走鼠标。
-	# Web 平台例外：浏览器要求用户手势才能申请指针锁定，启动时请求必然被拒，
-	# 只会在控制台留下一条未捕获的 Promise 异常。网页版让玩家点一下画面再锁定。
-	if capture_on_start and not OS.has_feature("web") and get_window().has_focus():
+	if capture_on_start and get_window().has_focus():
 		capture_mouse()
 
 	# 监听窗口焦点变化，失焦自动释放
@@ -234,8 +232,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			capture_mouse()
 		return
 
-	# 浏览器/Web 平台要求「用户手势」内才能申请指针锁定（pointer lock），
-	# 启动时直接 CAPTURED 会被静默拒绝。这里补一条：点一下画面就重新捕获。
+	# 启动时可能没锁上（窗口还没聚焦），中途也可能丢锁（切窗口回来、别的程序
+	# 弹了提示）。这里补一条：点一下画面就重新捕获。
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:

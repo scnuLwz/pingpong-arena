@@ -823,10 +823,6 @@ func _ready() -> void:
 ## ★ 之前项目里**一行全屏代码都没有** —— 所以 F11、Alt+Enter 按下去全都没反应，
 ##   用户只能得到一个固定在 720p 的小窗口。这里一次性补齐三个入口：
 ##   启动最大化、键盘快捷键、设置面板按钮。
-##
-## ★ Web 端必须由**真实用户手势**触发全屏：浏览器禁止脚本自发请求，
-##   所以网页上只有点「全屏」按钮这一条路，键盘快捷键在浏览器里无效。
-##   （不是代码偷懒，是浏览器安全模型如此。）
 func is_fullscreen() -> bool:
 	return DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
 
@@ -842,10 +838,7 @@ func toggle_fullscreen() -> bool:
 
 
 ## 启动时直接全屏（用户要全屏）。保留 F11 / Alt+Enter 随时切回最大化。
-## Web 端没有「窗口」概念，跳过。
 func apply_window_startup() -> void:
-	if OS.has_feature("web"):
-		return
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 
 
