@@ -1488,9 +1488,47 @@ var _diff_t: float = 1.0
 var _tour_label: Label
 
 
+## 渲染分辨率缩放（Web 专用）。0.72 ≈ 只画 52% 的像素。
+const WEB_RENDER_SCALE := 0.72
+## 方向光阴影贴图边长（Web 专用）。Godot 默认 4096 → 1670 万像素，
+## 比 1080p 主画面还大 8 倍；1024 只要 1/16，投影依旧在、只是略软。
+const WEB_DIR_SHADOW_SIZE := 1024
+
+
+## ★ Web 专用渲染预算 —— 桌面版一个字节都不受影响。
+##
+## 为什么要有这段（2026-10-07）：用户报「网页版卡到没法玩」。实测的账是
+## **一帧提交约 570 万三角面**：球台 1,399,081（主渲染）+ 同量再次进阴影 pass
+## + 人群 357×7998 = 2,855,286，另有约 430 次 draw call。
+## 桌面走 Forward+ / Vulkan / 多线程，这些量无所谓；Web 是**单线程 wasm + WebGL2**，
+## 同样的量直接把帧率吃光。
+##
+## 因此分两头治：
+##   ① 几何（根治）：球台 1.4M → 11,829 面、观众 7998 → 1593 面（改的是 .res / .glb 资源，
+##      不在本函数里）。一帧面数降到约 62 万，降幅约 89%。
+##   ② 填充率（本函数）：Web 上把 3D 渲染分辨率降到 WEB_RENDER_SCALE、
+##      方向光阴影贴图从 4096 降到 WEB_DIR_SHADOW_SIZE。
+##      ★ 阴影贴图这一步尤其值：它是**每帧一次全场景深度 pass**，
+##        贴图边长减半就省 3/4，减到 1024 省 15/16，而观感只是影子略软。
+##
+## ★ 两个常量都是「性能 / 观感」的折中。要再调，先跑 tests/_perf_render.tscn
+##   看几何账（它无头可跑，不依赖 GPU），别凭感觉改。
+func _apply_web_render_budget() -> void:
+	if not OS.has_feature("web"):
+		return
+	var vp := get_viewport()
+	if vp != null:
+		vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
+		vp.scaling_3d_scale = WEB_RENDER_SCALE
+	RenderingServer.directional_shadow_atlas_set_size(WEB_DIR_SHADOW_SIZE, true)
+	print("[web] 渲染预算：3D 缩放 %.2f，方向光阴影贴图 %d" %
+		[WEB_RENDER_SCALE, WEB_DIR_SHADOW_SIZE])
+
+
 func _ready() -> void:
 	# 不 randomize() 的话 Godot 每次用同一个默认种子，"随机发球"会变成固定落点
 	randomize()
+	_apply_web_render_budget()
 	_stamina = max_stamina
 	apply_preferences()
 	_resolve_refs()
