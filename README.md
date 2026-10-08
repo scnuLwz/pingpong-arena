@@ -13,10 +13,12 @@ Godot 4.7.2 的第一人称乒乓球游戏。持球、对打、发球解算、AI
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | **[pingpong-arena-win64.zip](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena-win64.zip)** | 51.7 MB | **推荐** —— 解压后双击 `pingpong-arena.exe` |
-| [pingpong-arena.exe](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena.exe) | 150.3 MB | 单文件，免解压，直接双击运行 |
+| [pingpong-arena.exe](https://github.com/scnuLwz/pingpong-arena/releases/latest/download/pingpong-arena.exe) | 150.4 MB | 单文件，免解压，直接双击运行 |
 
+> **2026-10-08 更新**：击球音换成**真实球拍击球**的素材 —— 从一段真实对打录音里
+> 切出四次不同的击球（频谱重心 2835~6128 Hz，不是同一段改音高）。
+> ⚠️ 这段素材来自 B 站视频、**不是 CC0**，出处与替换方法见 [`audio/CREDITS.txt`](audio/CREDITS.txt)。
 > **2026-10-07 更新**：球台与观众模型减面（一帧三角面 −89%），安装包随之变小；
-> 击球 / 弹台音效换回早先的合成音（更干净、延迟更低）。
 > 同时 **网页版已下线** —— 请下载下方桌面版；源码仍然开源，想自己导出可以按本文件的说明来。
 > **2026-10-06 更新**：修掉了旧版本「进得了主菜单、点开始比赛没反应」的问题。
 > 详见 [Release 说明](https://github.com/scnuLwz/pingpong-arena/releases/latest)。
@@ -154,6 +156,12 @@ bash tests/verify_export.sh                            # 验桌面版 exe
 
 ## 素材授权
 
-音效（`audio/`）来自 [BigSoundBank](https://bigsoundbank.com)（Joseph SARDIN），
+> ⚠️ **注意**：击球音 `audio/hit1~4.wav` 取自 B 站视频 `BV1WQ4y1h7Ar`，
+> **不是 CC0**、版权归 UP 主所有。公开发布的这一版包含它 = 有版权风险。
+> 要换成可自由分发的素材：替换 `audio/hit1~4.wav` 后重新导出即可
+> （`pingpong_audio.gd` 的 `HIT_VARIANTS` 不用改，文件名保持一致）。
+
+其余音效（`cheer1~2` / `hit_soft` / `hit_spin` / `net` / `whoosh` / `crowd` / `bounce`）
+来自 [BigSoundBank](https://bigsoundbank.com)（Joseph SARDIN）或**程序合成**，
 **CC0 1.0 / 可商用免署名**；`nailong_laugh.mp3` 来自奶龙页内联音频。详见
 `audio/CREDITS.txt`。字体子集取自 Noto Sans SC（OFL 1.1）。

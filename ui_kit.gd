@@ -376,8 +376,8 @@ static func look_controls(compact: bool = false) -> Control:
 
 
 ## 音量滑杆的试听音。用真正的游戏素材，试听才有意义 ——
-## 见 pingpong_audio.gd 的 HIT_VARIANTS。
-const PREVIEW_HIT := preload("res://audio/hit.wav")
+## 见 pingpong_audio.gd 的 HIT_VARIANTS（取轮转池的第一条）。
+const PREVIEW_HIT := preload("res://audio/hit1.wav")
 const PREVIEW_CROWD := preload("res://audio/crowd.wav")
 ## 试听呐喊 / 奶龙笑要和**游戏里真正放的那条**是同一份素材，
 ## 否则「试听觉得行、实战里不是这个声」。
